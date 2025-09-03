@@ -5,16 +5,14 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# Optimiseur de production (v4.6)
+# Optimiseur de production (v4.7)
+# - Lit la fenêtre (en jours) depuis la cellule B2 du fichier Excel
 # - Sélection intelligente (autonomie + ventes)
-# - 1 goût : 64 hL PAR goût ; 2 goûts : 64 hL AU TOTAL (épuisement simultané)
-# - Formats internes: 12×0.33 L, 6×0.75 L, 4×0.75 L (parseur robuste)
-# - Arrondi au carton (half-up)
-# - Lecture Excel: ignore les lignes contenant au moins UNE cellule au fond noir
-# - CA & pertes estimées :
-#     * Vue PRINCIPALE : Pertes pour TOUS les goûts si on NE PRODUIT RIEN (horizon = fenêtre)
-#     * Vue optionnelle : Pertes des NON sélectionnés jusqu'à T_end (comme avant)
-# - Prix par bouteille éditables (0.33 L et 0.75 L)
+# - 1 goût : 64 hL PAR goût ; 2 goûts : 64 hL AU TOTAL
+# - Formats: 12×0.33 L, 6×0.75 L, 4×0.75 L
+# - Ignore les lignes au fond noir
+# - Prix bouteille éditables (0.33 L / 0.75 L)
+# - Pertes CA (vue principale: aucune production pour tous les goûts)
 # =========================
 
 st.set_page_config(page_title="Optimiseur de production — 64 hL / 1–2 goûts", page_icon="🧪", layout="wide")
@@ -23,12 +21,14 @@ ALLOWED_FORMATS = {(12, 0.33), (6, 0.75), (4, 0.75)}
 ROUND_TO_CARTON = True
 VOL_TOL = 0.02
 EPS = 1e-9
+DEFAULT_WINDOW_DAYS = 60  # fallback si B2 introuvable
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.header("Paramètres")
+    st.header("Paramètres de production")
     volume_cible = st.number_input(
-        "Volume cible (hL)", min_value=1.0, value=64.0, step=1.0,
+        "Volume cible (hL)",
+        min_value=1.0, value=64.0, step=1.0,
         help="Si 1 goût: volume PAR goût. Si 2 goûts: volume TOTAL partagé."
     )
     nb_gouts = st.selectbox("Nombre de goûts simultanés", [1, 2], index=0)
@@ -37,22 +37,21 @@ with st.sidebar:
         value=True,
         help="Si décoché: répartition égale entre formats d'un même goût."
     )
-
-    with st.expander("Options avancées"):
-        window_days = st.number_input("Fenêtre de ventes (jours)", min_value=7, max_value=120, value=60, step=1)
-
     st.markdown("---")
     st.subheader("Prix par bouteille (€)")
-    price_033 = st.number_input("Prix 0,33 L (€ / bouteille)", min_value=0.0, value=1.75, step=0.01, format="%.2f")
-    price_075 = st.number_input("Prix 0,75 L (€ / bouteille)", min_value=0.0, value=3.10, step=0.01, format="%.2f")
+    price_033 = st.number_input("Prix 0,33 L (€ / bt)", min_value=0.0, value=1.75, step=0.01, format="%.2f")
+    price_075 = st.number_input("Prix 0,75 L (€ / bt)", min_value=0.0, value=3.10, step=0.01, format="%.2f")
 
-# ---------- Header ----------
 st.title("🧪 Optimiseur de production — 64 hL / 1–2 goûts")
-st.caption("Sélection auto (autonomie + ventes), plan par formats, et pertes CA (vue principale : aucune production).")
+st.caption("La fenêtre d’évaluation (jours) est automatiquement lue en **B2** du fichier Excel.")
 
 # ---------- Upload ----------
 uploaded = st.file_uploader("Dépose ton fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"])
+if uploaded is None:
+    st.info("💡 Charge un fichier Excel pour commencer.")
+    st.stop()
 
+# ---------- Utilitaires Excel ----------
 def detect_header_row(df_raw: pd.DataFrame) -> int:
     must = {"Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"}
     for i in range(min(10, len(df_raw))):
@@ -78,17 +77,84 @@ def rows_to_keep_by_fill(excel_bytes: bytes, header_idx: int) -> list[bool]:
         keep.append(not is_black)
     return keep
 
-def read_input_excel(uploaded_file) -> pd.DataFrame:
+# --- Extraction de la fenêtre (jours) depuis B2 ---
+def parse_days_from_b2(value) -> int | None:
+    """
+    Essaie d’extraire un nombre de jours à partir du contenu de B2.
+    - soit un entier '60' ou '60 jours'
+    - soit un intervalle de dates '01/07/24 - 31/08/24' -> différence en jours (>=1)
+    - soit un Excel datetime/daterange.
+    Retourne None si indétectable.
+    """
+    try:
+        # Si déjà un nombre
+        if isinstance(value, (int, float)) and not pd.isna(value):
+            v = int(round(float(value)))
+            return v if v > 0 else None
+
+        # Si datetime ou date range dans une cellule (rare)
+        import datetime
+        if isinstance(value, (datetime.date, datetime.datetime)):
+            # On ne sait pas la date de fin -> non exploitable seul
+            return None
+
+        if value is None:
+            return None
+
+        s = str(value).strip()
+
+        # "xx jours"
+        m = re.search(r"(\d+)\s*(?:j|jour|jours)\b", s, flags=re.IGNORECASE)
+        if m:
+            v = int(m.group(1))
+            return v if v > 0 else None
+
+        # Deux dates "dd/mm/yyyy - dd/mm/yyyy" (ou variations)
+        date_pat = r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}).*?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"
+        m2 = re.search(date_pat, s)
+        if m2:
+            d1 = pd.to_datetime(m2.group(1), dayfirst=True, errors="coerce")
+            d2 = pd.to_datetime(m2.group(2), dayfirst=True, errors="coerce")
+            if pd.notna(d1) and pd.notna(d2):
+                days = int((d2 - d1).days)
+                # inclure le dernier jour si besoin :
+                if days <= 0:
+                    return None
+                return days
+
+        # Fallback : premier entier isolé
+        m3 = re.search(r"\b(\d{1,4})\b", s)
+        if m3:
+            v = int(m3.group(1))
+            return v if v > 0 else None
+    except Exception:
+        return None
+    return None
+
+def read_input_excel_and_period(uploaded_file):
     file_bytes = uploaded_file.read()
+    # détecter header
     raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
     header_idx = detect_header_row(raw)
+    # lire données
     df = pd.read_excel(io.BytesIO(file_bytes), header=header_idx)
+    # filtrer lignes noires
     keep_mask = rows_to_keep_by_fill(file_bytes, header_idx)
     if len(keep_mask) < len(df):
         keep_mask = keep_mask + [True] * (len(df) - len(keep_mask))
     df = df.iloc[[i for i, k in enumerate(keep_mask) if k]].reset_index(drop=True)
-    return df
+    # lire B2
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        b2_val = ws["B2"].value
+        wd = parse_days_from_b2(b2_val)
+    except Exception:
+        wd = None
+    return df, (wd if wd and wd > 0 else DEFAULT_WINDOW_DAYS), file_bytes
 
+# --------- Parse "Stock" robuste ---------
 def parse_stock(text: str):
     if pd.isna(text): return np.nan, np.nan
     s = str(text)
@@ -146,7 +212,8 @@ def is_allowed_format(nb_bottles, vol_l, stock_txt: str) -> bool:
             return True
     return False
 
-def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list, window_days):
+# ---------- Coeur de calcul ----------
+def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list):
     required = ["Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]
     miss = [c for c in required if c not in df_in.columns]
     if miss: raise ValueError(f"Colonnes manquantes: {miss}")
@@ -263,7 +330,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
     agg_full["vitesse_j"] = agg_full["ventes_hl"] / max(float(window_days), 1.0)
     agg_full["jours_autonomie"] = np.where(agg_full["vitesse_j"] > 0, agg_full["stock_hl"] / agg_full["vitesse_j"], np.inf)
     agg_full["score_urgence"] = agg_full["vitesse_j"] / (agg_full["jours_autonomie"] + EPS)
-    synth_sel = agg_full.loc[gouts_cibles][["ventes_hl", "stock_hl", "vitesse_j", "jours_autonomie", "score_urgence"]].copy()
+    synth_sel = agg_full.loc[df_calc["Produit"].unique()][["ventes_hl", "stock_hl", "vitesse_j", "jours_autonomie", "score_urgence"]].copy()
     synth_sel = synth_sel.rename(columns={
         "ventes_hl": "Ventes 2 mois (hL)",
         "stock_hl": "Stock (hL)",
@@ -272,36 +339,37 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         "score_urgence": "Score urgence"
     })
 
-    return df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all_formats, agg_full
+    return df_min, cap_resume, list(df_calc["Produit"].unique()), synth_sel, df_calc, df_all_formats, agg_full
 
-# ---------- Flow ----------
-if uploaded is None:
-    st.info("💡 Charge un fichier Excel pour commencer.")
-    st.stop()
-
+# ---------- Lecture + période ----------
 try:
-    df_in = read_input_excel(uploaded)
+    df_in, window_days, file_bytes = read_input_excel_and_period(uploaded)
 except Exception as e:
     st.error(f"Erreur de lecture : {e}")
     st.stop()
 
+st.info(f"📅 Fenêtre de ventes détectée via **B2** : **{window_days} jours** "
+        f"(défaut {DEFAULT_WINDOW_DAYS} si non détecté).")
+
+# ---------- UI dynamique : exclusions / manuel ----------
 with st.sidebar:
     all_gouts = sorted(pd.Series(df_in.get("Produit", pd.Series(dtype=str))).dropna().astype(str).unique())
     excluded_gouts = st.multiselect("🚫 Exclure certains goûts", options=all_gouts, default=[])
-    use_manual = st.checkbox("Sélection manuelle DES goûts à produire", value=False, help="Sinon : sélection automatique (autonomie + ventes).")
+    use_manual = st.checkbox("Sélection manuelle DES goûts à produire", value=False)
     manual_keep = None
     if use_manual:
         manual_keep = st.multiselect("Choisis les goûts à produire", options=[g for g in all_gouts if g not in excluded_gouts], default=[])
 
+# ---------- Calcul principal ----------
 try:
     df_min, cap_resume, gouts_cibles, synth_sel, df_selected_calc, df_all_formats, agg_full = compute_plan(
         df_in=df_in,
+        window_days=window_days,
         volume_cible=volume_cible,
         nb_gouts=nb_gouts,
         repartir_pro_rv=repartir_pro_rv,
         manual_keep=manual_keep,
-        exclude_list=excluded_gouts,
-        window_days=window_days
+        exclude_list=excluded_gouts
     )
 except Exception as e:
     st.error(f"Erreur de calcul : {e}")
@@ -342,7 +410,7 @@ pertes_tous_aucune_prod.rename(columns={
 }, inplace=True)
 perte_totale_aucune = float(pertes_tous_aucune_prod["Perte (€)"].sum()) if len(pertes_tous_aucune_prod) else 0.0
 
-# ---------- (Optionnel) : pertes des NON sélectionnés jusqu'à T_end (ancienne vue) ----------
+# ---------- Optionnel : pertes des non-sélectionnés jusqu’à T_end ----------
 df_sel = df_selected_calc.copy()
 df_sel["vitesse_hL_j"] = df_sel["Volume vendu (hl)"] / max(float(window_days), 1.0)
 total_stock_plus_prod = (df_sel["Volume disponible (hl)"] + df_sel.get("X_adj (hL)", 0)).sum()
@@ -365,6 +433,7 @@ perte_totale_Tend = float(pertes_non_sel_Tend["Perte (€)"].sum()) if len(perte
 st.subheader("Résumé")
 st.metric("Goûts sélectionnés", len(gouts_cibles))
 st.metric("Capacité utilisée", cap_resume)
+st.caption(f"Fenêtre utilisée (B2) : **{window_days} jours**.")
 
 st.subheader("Production simplifiée")
 st.dataframe(df_min.head(200), use_container_width=True)
@@ -375,7 +444,7 @@ with st.expander("Pourquoi ces goûts ? (autonomie & ventes)"):
             "Ventes 2 mois (hL)": "{:.2f}",
             "Stock (hL)": "{:.2f}",
             "Vitesse (hL/j)": "{:.3f}",
-            "Autonomie (jours)": lambda v: "∞" if np.isinf(v) else f"{v:.1f}",
+            "Autonomie (jours)": lambda v: '∞' if np.isinf(v) else f"{v:.1f}",
             "Score urgence": "{:.6f}",
         }),
         use_container_width=True
@@ -386,7 +455,7 @@ colA, colB = st.columns([2,1])
 with colA:
     st.dataframe(
         pertes_tous_aucune_prod.style.format({
-            "Autonomie (jours)": lambda v: "∞" if np.isinf(v) else f"{v:.1f}",
+            "Autonomie (jours)": lambda v: '∞' if np.isinf(v) else f"{v:.1f}",
             "CA/jour (€)": "€{:,.0f}",
             "Perte (€)": "€{:,.0f}",
         }),
@@ -394,8 +463,6 @@ with colA:
     )
 with colB:
     st.metric("Perte totale estimée (aucune production)", f"€{perte_totale_aucune:,.0f}")
-st.caption("Hypothèse : **aucune production supplémentaire** pour tous les goûts sur la fenêtre sélectionnée. "
-           "Perte par goût = max(fenêtre - autonomie, 0) × CA/jour.")
 
 with st.expander("(Optionnel) Pertes des NON sélectionnés jusqu'à T_end"):
     st.write(f"**Horizon T_end** ≈ {('∞' if np.isinf(T_end) else f'{T_end:.1f} jours')} (épuisement des goûts sélectionnés).")
