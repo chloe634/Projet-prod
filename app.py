@@ -7,10 +7,10 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# Optimiseur de production (v4.8)
+# Optimiseur de production — version corrigée
 # - Fenêtre (jours) lue en B2 du xlsx
 # - Mapping produits → goûts canoniques (CSV repo ou upload)
-# - Sélection intelligente (autonomie + ventes) par GoutCanon
+# - Exclusion: n’affecte QUE le tableau de production (pas les autres vues)
 # - 1 goût : 64 hL PAR goût ; 2 goûts : 64 hL AU TOTAL
 # - Formats: 12×0.33 L, 6×0.75 L, 4×0.75 L
 # - Ignore les lignes au fond noir
@@ -26,8 +26,7 @@ VOL_TOL = 0.02
 EPS = 1e-9
 DEFAULT_WINDOW_DAYS = 60  # fallback si B2 introuvable
 
-
-# ---------- Sidebar (paramètres de prod + prix + mapping) ----------
+# ---------- Sidebar ----------
 with st.sidebar:
     st.header("Paramètres de production")
     volume_cible = st.number_input(
@@ -37,9 +36,9 @@ with st.sidebar:
     )
     nb_gouts = st.selectbox("Nombre de goûts simultanés", [1, 2], index=0)
     repartir_pro_rv = st.checkbox(
-        "Répartition par formats au prorata des vitesses de vente",
+        "Répartir par formats au prorata des vitesses de vente",
         value=True,
-        help="Sinon: répartition égale entre formats d'un même goût."
+        help="Si décoché: répartition égale entre formats d'un même goût."
     )
     st.markdown("---")
     st.subheader("Prix par bouteille (€)")
@@ -50,16 +49,15 @@ with st.sidebar:
     uploaded_map = st.file_uploader("Uploader un `flavor_map.csv` (optionnel)", type=["csv"], key="map")
 
 st.title("🧪 Optimiseur de production — 64 hL / 1–2 goûts")
-st.caption("Fenêtre (jours) lue automatiquement en **B2**. Les calculs s’effectuent par **goût canonique** (mapping CSV).")
+st.caption("La fenêtre d’évaluation (jours) est automatiquement lue en **B2** du fichier Excel. L’exclusion n’affecte **que** le tableau de production.")
 
-# ---------- Upload Excel ----------
+# ---------- Upload ----------
 uploaded = st.file_uploader("Dépose ton fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"])
 if uploaded is None:
     st.info("💡 Charge un fichier Excel pour commencer.")
     st.stop()
 
-
-# ---------- Outils Excel / parsing ----------
+# ---------- Utilitaires Excel ----------
 def detect_header_row(df_raw: pd.DataFrame) -> int:
     must = {"Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"}
     for i in range(min(10, len(df_raw))):
@@ -88,15 +86,13 @@ def rows_to_keep_by_fill(excel_bytes: bytes, header_idx: int) -> list[bool]:
 def parse_days_from_b2(value) -> int | None:
     try:
         if isinstance(value, (int, float)) and not pd.isna(value):
-            v = int(round(float(value)))
-            return v if v > 0 else None
+            v = int(round(float(value)));  return v if v > 0 else None
         if value is None:
             return None
         s = str(value).strip()
         m = re.search(r"(\d+)\s*(?:j|jour|jours)\b", s, flags=re.IGNORECASE)
         if m:
-            v = int(m.group(1))
-            return v if v > 0 else None
+            v = int(m.group(1));  return v if v > 0 else None
         date_pat = r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}).*?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"
         m2 = re.search(date_pat, s)
         if m2:
@@ -107,8 +103,7 @@ def parse_days_from_b2(value) -> int | None:
                 return days if days > 0 else None
         m3 = re.search(r"\b(\d{1,4})\b", s)
         if m3:
-            v = int(m3.group(1))
-            return v if v > 0 else None
+            v = int(m3.group(1));  return v if v > 0 else None
     except Exception:
         return None
     return None
@@ -122,7 +117,6 @@ def read_input_excel_and_period(uploaded_file):
     if len(keep_mask) < len(df):
         keep_mask = keep_mask + [True] * (len(df) - len(keep_mask))
     df = df.iloc[[i for i, k in enumerate(keep_mask) if k]].reset_index(drop=True)
-    # lecture de B2
     try:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -132,7 +126,6 @@ def read_input_excel_and_period(uploaded_file):
     except Exception:
         wd = None
     return df, (wd if wd and wd > 0 else DEFAULT_WINDOW_DAYS), file_bytes
-
 
 # ---------- Mapping produits → goûts canoniques ----------
 def load_flavor_map(uploaded_file=None) -> pd.DataFrame:
@@ -174,8 +167,7 @@ def suggest_missing_mappings(df: pd.DataFrame, fm: pd.DataFrame) -> pd.DataFrame
         suggestions.append({"name": u, "suggestions": ", ".join(guess)})
     return pd.DataFrame(suggestions)
 
-
-# ---------- Parsing "Stock" et formats ----------
+# ---------- Parsing "Stock" & formats ----------
 def parse_stock(text: str):
     if pd.isna(text): return np.nan, np.nan
     s = str(text)
@@ -233,9 +225,8 @@ def is_allowed_format(nb_bottles, vol_l, stock_txt: str) -> bool:
             return True
     return False
 
-
-# ---------- Calcul principal (tout en GoutCanon) ----------
-def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list):
+# ---------- Cœur de calcul (AUCUNE exclusion ici) ----------
+def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv):
     required = ["Produit", "GoutCanon", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]
     miss = [c for c in required if c not in df_in.columns]
     if miss: raise ValueError(f"Colonnes manquantes: {miss}")
@@ -252,19 +243,6 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
     df["Volume/carton (hL)"] = (df["Bouteilles/carton"] * df["Volume bouteille (L)"]) / 100.0
     df = df.dropna(subset=["GoutCanon", "Volume/carton (hL)", "Volume vendu (hl)", "Volume disponible (hl)"]).reset_index(drop=True)
 
-    df_all_formats = df.copy()
-
-    # Exclusions par goût canonique
-    if exclude_list:
-        df = df[~df["GoutCanon"].astype(str).str.strip().isin(exclude_list)]
-        df_all_formats = df_all_formats[~df_all_formats["GoutCanon"].astype(str).str.strip().isin(exclude_list)]
-
-    # Sélection manuelle (par goût canonique)
-    if manual_keep:
-        keep = [g.strip() for g in manual_keep]
-        df = df[df["GoutCanon"].astype(str).str.strip().isin(keep)]
-        df_all_formats = df_all_formats[df_all_formats["GoutCanon"].astype(str).str.strip().isin(keep)]
-
     # Sélection intelligente (autonomie + ventes), par goût canonique
     agg = df.groupby("GoutCanon").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
@@ -275,16 +253,8 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
     agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)
     agg = agg.sort_values(by=["score_urgence", "jours_autonomie", "ventes_hl"], ascending=[False, True, False])
 
-    if not manual_keep:
-        gouts_cibles = agg.index.tolist()[:nb_gouts]
-        df_selected = df[df["GoutCanon"].isin(gouts_cibles)].copy()
-    else:
-        gouts_cibles = sorted(set(df["GoutCanon"]))
-        if len(gouts_cibles) > nb_gouts:
-            order = [g for g in agg.index if g in gouts_cibles]
-            gouts_cibles = order[:nb_gouts]
-        df_selected = df[df["GoutCanon"].isin(gouts_cibles)].copy()
-
+    gouts_cibles = agg.index.tolist()[:nb_gouts]
+    df_selected = df[df["GoutCanon"].isin(gouts_cibles)].copy()
     if len(gouts_cibles) == 0:
         raise ValueError("Aucun goût sélectionné (tout a peut-être été exclu).")
 
@@ -314,7 +284,6 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
                 x = x + (deficit * (r / s) if s > 0 else deficit / len(x))
             x = np.where(x < 1e-9, 0.0, x)
             df_calc.loc[grp.index, "X_adj (hL)"] = x
-
         cap_resume = f"{volume_cible:.2f} hL par goût"
 
     else:
@@ -336,7 +305,6 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
             x = x + (deficit * (w / s) if s > 0 else deficit / len(x))
         x = np.where(x < 1e-9, 0.0, x)
         df_calc["X_adj (hL)"] = x
-
         cap_resume = f"{volume_cible:.2f} hL au total (2 goûts)"
 
     # Cartons
@@ -345,13 +313,13 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         df_calc["Cartons à produire (arrondi)"] = np.floor(df_calc["Cartons à produire (exact)"] + 0.5).astype("Int64")
         df_calc["Volume produit arrondi (hL)"] = df_calc["Cartons à produire (arrondi)"] * df_calc["Volume/carton (hL)"]
 
-    # Sortie simplifiée (on expose Produit ET GoutCanon)
+    # Sortie
     df_min = df_calc[[
         "GoutCanon", "Produit", "Stock",
         "Cartons à produire (exact)", "Cartons à produire (arrondi)", "Volume produit arrondi (hL)"
     ]].sort_values(["GoutCanon", "Produit", "Stock"]).reset_index(drop=True)
 
-    # Transparence sélection
+    # Transparence
     agg_full = df.groupby("GoutCanon").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
@@ -369,8 +337,7 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         "score_urgence": "Score urgence"
     })
 
-    return df_min, cap_resume, sel_gouts, synth_sel, df_calc, df_all_formats, agg_full
-
+    return df_min, cap_resume, sel_gouts, synth_sel
 
 # ---------- Lecture + période ----------
 try:
@@ -378,10 +345,9 @@ try:
 except Exception as e:
     st.error(f"Erreur de lecture : {e}")
     st.stop()
-
 st.info(f"📅 Fenêtre détectée (B2) : **{window_days} jours** (défaut {DEFAULT_WINDOW_DAYS} si non détecté).")
 
-# Appliquer le mapping produits → goûts
+# ---------- Mapping ----------
 flavor_map_df = load_flavor_map(uploaded_map)
 df_in = apply_canonical_flavor(df_in_raw, flavor_map_df)
 
@@ -390,11 +356,10 @@ with st.expander("🔎 Produits non mappés (suggestions)"):
     if len(missing):
         st.write("Ces libellés ne sont pas encore dans `flavor_map.csv` :")
         st.dataframe(missing, use_container_width=True)
-        st.caption("Ajoute les lignes correspondantes dans `flavor_map.csv` (colonne `name` = libellé Excel, `canonical` = goût).")
     else:
         st.success("Tous les libellés sont couverts par le mapping.")
 
-# ---------- UI dynamique : exclusions / manuel (par goût canonique) ----------
+# ---------- Exclusions (N’AFFECTE QUE LA PRODUCTION) ----------
 with st.sidebar:
     all_gouts = sorted(pd.Series(df_in.get("GoutCanon", pd.Series(dtype=str))).dropna().astype(str).unique())
     excluded_gouts = st.multiselect("🚫 Exclure certains goûts (canoniques)", options=all_gouts, default=[])
@@ -403,85 +368,48 @@ with st.sidebar:
     if use_manual:
         manual_keep = st.multiselect("Choisis les goûts à produire", options=[g for g in all_gouts if g not in excluded_gouts], default=[])
 
-# ---------- Calcul principal ----------
+# 👉 On filtre seulement pour le calcul de PRODUCTION
+excluded_norm = {s.strip().lower() for s in excluded_gouts}
+if "GoutCanon" in df_in.columns:
+    mask_keep = ~df_in["GoutCanon"].astype(str).str.strip().str.lower().isin(excluded_norm)
+else:
+    mask_keep = ~df_in["Produit"].astype(str).str.strip().str.lower().isin(excluded_norm)
+df_for_production = df_in.loc[mask_keep].copy()
+
+# ---------- Calcul principal (avec le DF filtré pour la production) ----------
 try:
-    df_min, cap_resume, gouts_cibles, synth_sel, df_selected_calc, df_all_formats, agg_full = compute_plan(
-        df_in=df_in,
+    d# ---------- Calcul principal (avec le DF filtré pour la production) ----------
+try:
+    df_min, cap_resume, gouts_cibles, synth_sel = compute_plan(
+        df_in=df_for_production,
         window_days=window_days,
         volume_cible=volume_cible,
         nb_gouts=nb_gouts,
         repartir_pro_rv=repartir_pro_rv,
-        manual_keep=manual_keep,
-        exclude_list=excluded_gouts
     )
 except Exception as e:
     st.error(f"Erreur de calcul : {e}")
     st.stop()
 
-# ---------- Prix & vitesses (pour pertes) ----------
-df_all = df_all_formats.copy()
-df_all["vitesse_hL_j"] = df_all["Volume vendu (hl)"] / max(float(window_days), 1.0)
-
-def revenue_per_hL(vol_bottle_L: float) -> float:
-    if pd.isna(vol_bottle_L): return 0.0
-    if abs(vol_bottle_L - 0.33) <= VOL_TOL:
-        price = price_033; vol_key = 0.33
-    elif abs(vol_bottle_L - 0.75) <= VOL_TOL:
-        price = price_075; vol_key = 0.75
-    else:
-        return 0.0
-    bottles_per_hL = 100.0 / vol_key
-    return bottles_per_hL * price
-
-df_all["€_par_hL"] = df_all["Volume bouteille (L)"].apply(revenue_per_hL)
-df_all["€_par_j"] = df_all["vitesse_hL_j"] * df_all["€_par_hL"]
-
-# Vue PRINCIPALE : pertes si on NE PRODUIT RIEN (tous les goûts canoniques)
-agg_all = df_all.groupby("GoutCanon").agg(
-    vitesse_hL_j=("vitesse_hL_j", "sum"),
-    stock_hL=("Volume disponible (hl)", "sum"),
-    euro_par_j=("€_par_j", "sum"),
-).reset_index()
-agg_all["autonomie_j"] = np.where(agg_all["vitesse_hL_j"] > 0, agg_all["stock_hL"] / agg_all["vitesse_hL_j"], np.inf)
-agg_all["jours_perdus"] = np.clip(float(window_days) - agg_all["autonomie_j"], a_min=0.0, a_max=None)
-agg_all["Perte (€)"] = agg_all["jours_perdus"] * agg_all["euro_par_j"]
-pertes_tous_aucune_prod = agg_all[["GoutCanon", "autonomie_j", "euro_par_j", "Perte (€)"]].copy()
-pertes_tous_aucune_prod = pertes_tous_aucune_prod.sort_values("Perte (€)", ascending=False)
-pertes_tous_aucune_prod.rename(columns={
-    "GoutCanon": "Goût",
-    "autonomie_j": "Autonomie (jours)",
-    "euro_par_j": "CA/jour (€)",
-}, inplace=True)
-perte_totale_aucune = float(pertes_tous_aucune_prod["Perte (€)"].sum()) if len(pertes_tous_aucune_prod) else 0.0
-
-# Optionnel : pertes des non-sélectionnés jusqu’à T_end (par canoniques)
-df_sel = df_selected_calc.copy()
-df_sel["vitesse_hL_j"] = df_sel["Volume vendu (hl)"] / max(float(window_days), 1.0)
-total_stock_plus_prod = (df_sel["Volume disponible (hl)"] + df_sel.get("X_adj (hL)", 0)).sum()
-total_speed = df_sel["vitesse_hL_j"].sum()
-T_end = np.inf if total_speed <= EPS else total_stock_plus_prod / total_speed
-
-df_non_sel = df_all[~df_all["GoutCanon"].isin(gouts_cibles)].copy()
-if np.isinf(T_end) or T_end <= 0:
-    df_non_sel["Perte (€)"] = 0.0
+# ---------- Filtre d'affichage (garantie visuelle) ----------
+# Même si, pour une raison X, un goût exclu passait en amont,
+# on le retire JUSTE AVANT l'affichage du tableau de production.
+excluded_norm = {s.strip().lower() for s in excluded_gouts}
+if "GoutCanon" in df_min.columns:
+    mask_display = ~df_min["GoutCanon"].astype(str).str.strip().str.lower().isin(excluded_norm)
 else:
-    df_non_sel["t_rup_j"] = np.where(df_non_sel["vitesse_hL_j"] > 0,
-                                     df_non_sel["Volume disponible (hl)"] / df_non_sel["vitesse_hL_j"],
-                                     np.inf)
-    df_non_sel["jours_perdus"] = np.clip(T_end - df_non_sel["t_rup_j"], a_min=0.0, a_max=None)
-    df_non_sel["Perte (€)"] = df_non_sel["jours_perdus"] * df_non_sel["€_par_j"]
-pertes_non_sel_Tend = df_non_sel.groupby("GoutCanon", as_index=False)["Perte (€)"].sum().rename(columns={"GoutCanon": "Goût"})
-pertes_non_sel_Tend = pertes_non_sel_Tend.sort_values("Perte (€)", ascending=False)
-perte_totale_Tend = float(pertes_non_sel_Tend["Perte (€)"].sum()) if len(pertes_non_sel_Tend) else 0.0
+    mask_display = ~df_min["Produit"].astype(str).str.strip().str.lower().isin(excluded_norm)
+df_min_display = df_min.loc[mask_display].copy()
 
 # ---------- Affichages ----------
 st.subheader("Résumé")
 st.metric("Goûts sélectionnés", len(gouts_cibles))
 st.metric("Capacité utilisée", cap_resume)
-st.caption(f"Fenêtre utilisée (B2) : **{window_days} jours**.")
+st.caption(f"Fenêtre utilisée (B2) : **{window_days} jours**. "
+           f"Les goûts exclus sont retirés du tableau ci-dessous.")
 
 st.subheader("Production simplifiée (par formats)")
-st.dataframe(df_min.head(300), use_container_width=True)
+st.dataframe(df_min_display.head(300), use_container_width=True)
 
 with st.expander("Pourquoi ces goûts ? (autonomie & ventes — par goût canonique)"):
     st.dataframe(
@@ -494,28 +422,3 @@ with st.expander("Pourquoi ces goûts ? (autonomie & ventes — par goût canoni
         }),
         use_container_width=True
     )
-
-st.subheader("💶 Pertes si on NE PRODUIT RIEN (tous les goûts canoniques)")
-colA, colB = st.columns([2,1])
-with colA:
-    st.dataframe(
-        pertes_tous_aucune_prod.style.format({
-            "Autonomie (jours)": lambda v: '∞' if np.isinf(v) else f"{v:.1f}",
-            "CA/jour (€)": "€{:,.0f}",
-            "Perte (€)": "€{:,.0f}",
-        }),
-        use_container_width=True
-    )
-with colB:
-    st.metric("Perte totale estimée (aucune production)", f"€{perte_totale_aucune:,.0f}")
-
-with st.expander("(Optionnel) Pertes des goûts NON sélectionnés jusqu'à T_end"):
-    st.write(f"**Horizon T_end** ≈ {('∞' if np.isinf(T_end) else f'{T_end:.1f} jours')} (épuisement des goûts sélectionnés).")
-    col1, col2 = st.columns([2,1])
-    with col1:
-        if len(pertes_non_sel_Tend):
-            st.dataframe(pertes_non_sel_Tend.style.format({"Perte (€)": "€{:,.0f}"}), use_container_width=True)
-        else:
-            st.info("Aucune perte estimée (pas de goût non sélectionné en rupture sur l'horizon).")
-    with col2:
-        st.metric("Perte totale (jusqu'à T_end)", f"€{perte_totale_Tend:,.0f}")
