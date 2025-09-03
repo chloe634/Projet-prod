@@ -5,38 +5,30 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# Optimiseur de production (v3.4)
+# Optimiseur de production (v3.6)
 # - 1 goût : 64 hL PAR goût
-# - 2 goûts : 64 hL AU TOTAL répartis globalement
-# - Formats APPLICÉS EN INTERNE :
-#     * 33 cL  → carton de 12
-#     * 75 cL  → carton de 6
-#     * 75 cL  → carton de 4
-# - Arrondi au carton appliqué en interne (nearest / half-up)
+# - 2 goûts : 64 hL AU TOTAL (répartition globale pour épuisement simultané)
+# - Formats appliqués EN INTERNE :
+#     * 12 × 0.33 L
+#     *  6 × 0.75 L
+#     *  4 × 0.75 L  (renforcé)
+# - Arrondi au carton appliqué en interne (half-up)
 # =========================
 
 st.set_page_config(page_title="Optimiseur de production — 64 hL / 1–2 goûts", page_icon="🧪", layout="wide")
 
-# -------- Réglages cachés --------
-ALLOWED_FORMATS = {  # (nb_bouteilles_par_carton, volume_bouteille_L)
-    (12, 0.33),
-    (6, 0.75),
-    (4, 0.75),
-}
-ROUND_TO_CARTON = True          # arrondi half-up des cartons en interne
-VOL_TOL = 0.005                 # tolérance sur volume bouteille (L) pour matcher 0.33 / 0.75
+ALLOWED_FORMATS = {(12, 0.33), (6, 0.75), (4, 0.75)}
+ROUND_TO_CARTON = True
+VOL_TOL = 0.02  # tolérance sur 0.33 / 0.75
 
 # ---------- Sidebar ----------
 with st.sidebar:
     st.header("Paramètres")
     volume_cible = st.number_input(
-        "Volume cible (hL)",
-        min_value=1.0,
-        value=64.0,
-        step=1.0,
+        "Volume cible (hL)", min_value=1.0, value=64.0, step=1.0,
         help="Si 1 goût: volume PAR goût. Si 2 goûts: volume TOTAL partagé."
     )
-    nb_gouts = st.selectbox("Nombre de goûts simultanés", options=[1, 2], index=0)
+    nb_gouts = st.selectbox("Nombre de goûts simultanés", [1, 2], index=0)
     repartir_pro_rv = st.checkbox(
         "Répartir par formats au prorata des vitesses de vente",
         value=True,
@@ -53,7 +45,7 @@ st.title("🧪 Optimiseur de production — 64 hL / 1–2 goûts")
 st.caption("Charge un Excel d'autonomie, choisis tes options, et génère un plan propre pour l'atelier.")
 
 # ---------- Upload ----------
-uploaded = st.file_uploader("Dépose ton fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"]) 
+uploaded = st.file_uploader("Dépose ton fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"])
 
 # ---------- Utils ----------
 def detect_header_row(df_raw: pd.DataFrame) -> int:
@@ -67,37 +59,83 @@ def detect_header_row(df_raw: pd.DataFrame) -> int:
 def read_input_excel(file) -> pd.DataFrame:
     raw = pd.read_excel(file, header=None)
     header_idx = detect_header_row(raw)
-    df = pd.read_excel(file, header=header_idx)
-    return df
+    return pd.read_excel(file, header=header_idx)
 
+# --------- PARSEUR ROBUSTE DU CHAMP "STOCK" ---------
 def parse_stock(text: str):
-    """Retourne (nb_bouteilles, volume_bouteille_L) extraits du champ 'Stock'."""
+    """
+    Extrait (nb_bouteilles, volume_bouteille_L) depuis la colonne Stock.
+    Gère : 'Carton/Caisse/Colis de 4/6/12 Bouteilles 75cl', '4 Bouteilles 75cl',
+           '4x75cl', '4×75cl', '4 × 0.75 L', 'Carton de 4 ... - 0.75L', etc.
+    """
     if pd.isna(text):
         return np.nan, np.nan
     s = str(text)
 
-    # nb bouteilles/carton
-    m_nb = re.search(r"Carton de\s*(\d+)", s, flags=re.IGNORECASE)
-    nb = int(m_nb.group(1)) if m_nb else np.nan
+    # 1) Nombre de bouteilles
+    nb = None
+    for pat in [
+        r"(?:Carton|Caisse|Colis)\s+de\s*(\d+)",      # Carton de 4
+        r"(\d+)\s*[x×]\s*Bouteilles?",                # 4x Bouteilles
+        r"(\d+)\s*[x×]",                              # 4x75cl
+        r"(\d+)\s+Bouteilles?",                       # 4 Bouteilles
+    ]:
+        m = re.search(pat, s, flags=re.IGNORECASE)
+        if m:
+            try:
+                nb = int(m.group(1))
+                break
+            except:
+                pass
 
-    # volume bouteille (L)
-    m_l = re.findall(r"(\d+(?:[.,]\d+)?)\s*[lL]", s)
+    # 2) Volume bouteille (L)
+    vol_l = None
+    m_l = re.findall(r"(\d+(?:[.,]\d+)?)\s*[lL]", s)     # 0.75 L / 0,75L
     if m_l:
-        vol_l = float(m_l[-1].replace(',', '.'))
+        vol_l = float(m_l[-1].replace(",", "."))
     else:
-        m_cl = re.findall(r"(\d+(?:[.,]\d+)?)\s*c[lL]", s)
-        vol_l = float(m_cl[-1].replace(',', '.')) / 100.0 if m_cl else np.nan
-    return nb, vol_l
+        m_cl = re.findall(r"(\d+(?:[.,]\d+)?)\s*c[lL]", s)  # 75cl / 33 cL
+        if m_cl:
+            vol_l = float(m_cl[-1].replace(",", ".")) / 100.0
+
+    # 3) Combo "4x75cl" / "4×0.75L"
+    if nb is None or vol_l is None:
+        m_combo = re.search(r"(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*([lc]l?)", s, flags=re.IGNORECASE)
+        if m_combo:
+            try:
+                nb2 = int(m_combo.group(1))
+                val = float(m_combo.group(2).replace(",", "."))
+                unit = m_combo.group(3).lower()
+                vol2 = val if unit.startswith("l") else val/100.0
+                if nb is None: nb = nb2
+                if vol_l is None: vol_l = vol2
+            except:
+                pass
+
+    # 4) Heuristique de secours spéciale 4×75cL :
+    if (nb is None or np.isnan(nb)) and vol_l is not None and abs(vol_l - 0.75) <= VOL_TOL:
+        if re.search(r"(?:\b4\s*[x×]\b|Carton\s+de\s*4\b|4\s+Bouteilles?)", s, flags=re.IGNORECASE):
+            nb = 4
+
+    return (float(nb) if nb is not None else np.nan,
+            float(vol_l) if vol_l is not None else np.nan)
 
 def safe_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
-def is_allowed_format(nb_bottles, vol_l) -> bool:
-    """Vérifie (nb, vol) contre les formats autorisés avec tolérance sur le volume."""
+def is_allowed_format(nb_bottles, vol_l, stock_txt: str) -> bool:
+    """Vérifie (nb, vol) contre les formats autorisés avec tolérance; accepte 4×0.75 si motif présent dans le texte."""
     if pd.isna(nb_bottles) or pd.isna(vol_l):
-        return False
+        # tolérance si on détecte explicitement "4×75" dans le texte
+        if re.search(r"(?:\b4\s*[x×]\s*75\s*c?l\b|\b4\s+Bouteilles?\b.*75\s*c?l)", stock_txt, flags=re.IGNORECASE):
+            nb_bottles = 4
+            vol_l = 0.75
+        else:
+            return False
+    nb_bottles = int(nb_bottles)
+    vol_l = float(vol_l)
     for nb_ok, vol_ok in ALLOWED_FORMATS:
-        if int(nb_bottles) == nb_ok and abs(float(vol_l) - vol_ok) <= VOL_TOL:
+        if nb_bottles == nb_ok and abs(vol_l - vol_ok) <= VOL_TOL:
             return True
     return False
 
@@ -113,9 +151,13 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         df[c] = safe_num(df[c])
 
     # Parsing Stock
-    df[["Bouteilles/carton", "Volume bouteille (L)"]] = df["Stock"].apply(lambda s: pd.Series(parse_stock(s)))
-    # Filtre formats : 33cLx12, 75cLx6, 75cLx4
-    df = df[df.apply(lambda r: is_allowed_format(r["Bouteilles/carton"], r["Volume bouteille (L)"]), axis=1)].reset_index(drop=True)
+    parsed = df["Stock"].apply(parse_stock)
+    df[["Bouteilles/carton", "Volume bouteille (L)"]] = pd.DataFrame(parsed.tolist(), index=df.index)
+
+    # Filtre formats autorisés (avec heuristique 4×75)
+    mask_allowed = df.apply(lambda r: is_allowed_format(r["Bouteilles/carton"], r["Volume bouteille (L)"], str(r["Stock"])), axis=1)
+    df_dropped = df.loc[~mask_allowed, ["Produit", "Stock"]].copy()  # pour debug
+    df = df.loc[mask_allowed].reset_index(drop=True)
 
     # Volume/carton
     df["Volume/carton (hL)"] = (df["Bouteilles/carton"] * df["Volume bouteille (L)"]) / 100.0
@@ -131,7 +173,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         keep = [g.strip() for g in manual_keep]
         df = df[df["Produit"].astype(str).str.strip().isin(keep)]
 
-    # Choix auto des goûts (si pas manuel) : top N par ventes hL
+    # Choix auto des goûts
     ventes_par_gout = df.groupby("Produit")["Volume vendu (hl)"].sum().sort_values(ascending=False)
     if not manual_keep:
         gouts_cibles = ventes_par_gout.index.tolist()[:nb_gouts]
@@ -143,7 +185,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
 
     # ----- Deux modes -----
     if nb_gouts == 1:
-        # Mode 1 goût : 64 hL PAR goût (logique V1)
+        # 64 hL PAR goût
         df["Somme ventes (hL) par goût"] = df.groupby("Produit")["Volume vendu (hl)"].transform("sum")
         if repartir_pro_rv:
             df["r_i"] = np.where(df["Somme ventes (hL) par goût"] > 0,
@@ -172,7 +214,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         cap_resume = f"{volume_cible:.2f} hL par goût"
 
     else:
-        # Mode 2 goûts : 64 hL AU TOTAL (répartition globale pour épuisement simultané)
+        # 64 hL AU TOTAL
         somme_ventes = df["Volume vendu (hl)"].sum()
         if repartir_pro_rv and somme_ventes > 0:
             df["r_i_global"] = df["Volume vendu (hl)"] / somme_ventes
@@ -181,11 +223,11 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
 
         df["G_i (hL)"] = df["Volume disponible (hl)"]
         G_total_all = df["G_i (hL)"].sum()
-        Y_total_all = G_total_all + float(volume_cible)   # stocks + prod
+        Y_total_all = G_total_all + float(volume_cible)
 
         df["X_th (hL)"] = df["r_i_global"] * Y_total_all - df["G_i (hL)"]
 
-        # Ajustement GLOBAL pour ΣX = volume_cible et X>=0
+        # Ajustement GLOBAL (ΣX = volume_cible, X>=0)
         x = np.maximum(df["X_th (hL)"].to_numpy(dtype=float), 0.0)
         deficit = float(volume_cible) - x.sum()
         if deficit > 1e-9:
@@ -203,13 +245,12 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         df["Cartons à produire (arrondi)"] = np.floor(df["Cartons à produire (exact)"] + 0.5).astype("Int64")
         df["Volume produit arrondi (hL)"] = df["Cartons à produire (arrondi)"] * df["Volume/carton (hL)"]
 
-    # Sortie principale (simplifiée)
     df_min = df[[
         "Produit", "Stock",
         "Cartons à produire (exact)", "Cartons à produire (arrondi)", "Volume produit arrondi (hL)"
-    ]].copy()
+    ]].sort_values(["Produit", "Stock"]).reset_index(drop=True)
 
-    return df_min, cap_resume, gouts_cibles
+    return df_min, cap_resume, gouts_cibles, df, df_dropped
 
 # ---------- Flow ----------
 if uploaded is None:
@@ -231,7 +272,7 @@ if use_manual:
 exclude_list = [g.strip() for g in gouts_exclus.split(',') if g.strip()] if gouts_exclus else None
 
 try:
-    df_min, cap_resume, gouts_cibles = compute_plan(
+    df_min, cap_resume, gouts_cibles, df_debug, df_dropped = compute_plan(
         df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list
     )
 except Exception as e:
@@ -244,4 +285,16 @@ st.metric("Goûts sélectionnés", len(gouts_cibles))
 st.metric("Capacité utilisée", cap_resume)
 
 st.subheader("Production simplifiée")
-st.dataframe(df_min.head(80), use_container_width=True)
+st.dataframe(df_min.head(200), use_container_width=True)
+
+with st.expander("🔎 Debug parsing (détection formats)"):
+    st.write("Lignes prises en compte (après parsing):")
+    st.dataframe(
+        df_debug[["Produit", "Stock", "Bouteilles/carton", "Volume bouteille (L)", "Volume/carton (hL)"]]
+        .sort_values(["Produit", "Stock"])
+        .reset_index(drop=True),
+        use_container_width=True
+    )
+    if len(df_dropped):
+        st.write("Lignes exclues par le filtre de formats (à vérifier) :")
+        st.dataframe(df_dropped, use_container_width=True)
