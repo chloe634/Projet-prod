@@ -5,12 +5,13 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# Optimiseur de production (v4.1)
+# Optimiseur de production (v4.2)
 # - Sélection intelligente des goûts: score = vitesse_de_vente / (jours_autonomie + eps)
 # - 1 goût : 64 hL PAR goût, 2 goûts : 64 hL AU TOTAL (épuisement simultané)
 # - Formats internes: 12×0.33 L, 6×0.75 L, 4×0.75 L (parseur robuste)
 # - Arrondi au carton (half-up)
 # - Lecture Excel: ignore les lignes contenant au moins UNE cellule au fond noir
+# - EXCLUSION DES GOÛTS par cases à cocher (multiselect)
 # =========================
 
 st.set_page_config(page_title="Optimiseur de production — 64 hL / 1–2 goûts", page_icon="🧪", layout="wide")
@@ -20,7 +21,7 @@ ROUND_TO_CARTON = True
 VOL_TOL = 0.02   # tolérance sur 0.33 / 0.75 (L)
 EPS = 1e-9
 
-# ---------- Sidebar ----------
+# ---------- Sidebar (partie fixe) ----------
 with st.sidebar:
     st.header("Paramètres")
     volume_cible = st.number_input(
@@ -36,11 +37,6 @@ with st.sidebar:
 
     with st.expander("Options avancées"):
         window_days = st.number_input("Fenêtre de ventes (jours)", min_value=7, max_value=120, value=60, step=1)
-
-    st.markdown("---")
-    st.subheader("Contraintes goûts (optionnel)")
-    use_manual = st.checkbox("Sélection manuelle des goûts", value=False)
-    gouts_exclus = st.text_input("Exclure goûts (séparés par des virgules)", value="")
 
 # ---------- Header ----------
 st.title("🧪 Optimiseur de production — 64 hL / 1–2 goûts")
@@ -180,10 +176,11 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
     df["Volume/carton (hL)"] = (df["Bouteilles/carton"] * df["Volume bouteille (L)"]) / 100.0
     df = df.dropna(subset=["Produit", "Volume/carton (hL)", "Volume vendu (hl)", "Volume disponible (hl)"]).reset_index(drop=True)
 
-    # Exclusions / manuel
+    # Exclusions via cases à cocher
     if exclude_list:
-        excl = [g.strip() for g in exclude_list]
-        df = df[~df["Produit"].astype(str).str.strip().isin(excl)]
+        df = df[~df["Produit"].astype(str).str.strip().isin(exclude_list)]
+
+    # Sélection manuelle (optionnelle)
     if manual_keep:
         keep = [g.strip() for g in manual_keep]
         df = df[df["Produit"].astype(str).str.strip().isin(keep)]
@@ -209,7 +206,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
             df = df[df["Produit"].isin(gouts_cibles)]
 
     if len(gouts_cibles) == 0:
-        raise ValueError("Aucun goût sélectionné.")
+        raise ValueError("Aucun goût sélectionné (tout a peut-être été exclu).")
 
     # ---------- Calculs de production ----------
     if nb_gouts == 1:
@@ -274,7 +271,14 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
     ]].sort_values(["Produit", "Stock"]).reset_index(drop=True)
 
     # Transparence sélection
-    synth_sel = agg.loc[gouts_cibles][["ventes_hl", "stock_hl", "vitesse_j", "jours_autonomie", "score_urgence"]].copy()
+    agg_full = df_in.groupby("Produit").agg(
+        ventes_hl=("Volume vendu (hl)", "sum"),
+        stock_hl=("Volume disponible (hl)", "sum")
+    )
+    agg_full["vitesse_j"] = agg_full["ventes_hl"] / max(float(window_days), 1.0)
+    agg_full["jours_autonomie"] = np.where(agg_full["vitesse_j"] > 0, agg_full["stock_hl"] / agg_full["vitesse_j"], np.inf)
+    agg_full["score_urgence"] = agg_full["vitesse_j"] / (agg_full["jours_autonomie"] + EPS)
+    synth_sel = agg_full.loc[gouts_cibles][["ventes_hl", "stock_hl", "vitesse_j", "jours_autonomie", "score_urgence"]].copy()
     synth_sel = synth_sel.rename(columns={
         "ventes_hl": "Ventes 2 mois (hL)",
         "stock_hl": "Stock (hL)",
@@ -285,7 +289,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
 
     return df_min, cap_resume, gouts_cibles, synth_sel
 
-# ---------- Flow ----------
+# ---------- Lecture + UI dynamique (exclusions/manuel) ----------
 if uploaded is None:
     st.info("💡 Charge un fichier Excel pour commencer.")
     st.stop()
@@ -296,17 +300,26 @@ except Exception as e:
     st.error(f"Erreur de lecture : {e}")
     st.stop()
 
-manual_keep = None
-if use_manual:
+# UI dynamique dans la sidebar : exclusions par cases à cocher + sélection manuelle
+with st.sidebar:
     all_gouts = sorted(pd.Series(df_in.get("Produit", pd.Series(dtype=str))).dropna().astype(str).unique())
-    chosen = st.multiselect("Choisis les goûts à produire", options=all_gouts, default=all_gouts[:nb_gouts])
-    manual_keep = chosen
+    excluded_gouts = st.multiselect("🚫 Exclure certains goûts", options=all_gouts, default=[])
 
-exclude_list = [g.strip() for g in gouts_exclus.split(',') if g.strip()] if gouts_exclus else None
+    use_manual = st.checkbox("Sélection manuelle DES goûts à produire", value=False, help="Sinon, la sélection est faite automatiquement (autonomie + ventes).")
+    manual_keep = None
+    if use_manual:
+        manual_keep = st.multiselect("Choisis les goûts à produire", options=[g for g in all_gouts if g not in excluded_gouts], default=[])
 
+# ---------- Calculs ----------
 try:
     df_min, cap_resume, gouts_cibles, synth_sel = compute_plan(
-        df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list, window_days
+        df_in=df_in,
+        volume_cible=volume_cible,
+        nb_gouts=nb_gouts,
+        repartir_pro_rv=repartir_pro_rv,
+        manual_keep=manual_keep,
+        exclude_list=excluded_gouts,
+        window_days=window_days
     )
 except Exception as e:
     st.error(f"Erreur de calcul : {e}")
