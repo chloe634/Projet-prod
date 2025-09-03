@@ -5,23 +5,26 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# Optimiseur de production (v4.4)
+# Optimiseur de production (v4.6)
 # - Sélection intelligente (autonomie + ventes)
 # - 1 goût : 64 hL PAR goût ; 2 goûts : 64 hL AU TOTAL (épuisement simultané)
 # - Formats internes: 12×0.33 L, 6×0.75 L, 4×0.75 L (parseur robuste)
 # - Arrondi au carton (half-up)
 # - Lecture Excel: ignore les lignes contenant au moins UNE cellule au fond noir
-# - CA & pertes estimées avec PRIX SAISIS MANUELLEMENT (0.33L et 0.75L)
+# - CA & pertes estimées :
+#     * Vue PRINCIPALE : Pertes pour TOUS les goûts si on NE PRODUIT RIEN (horizon = fenêtre)
+#     * Vue optionnelle : Pertes des NON sélectionnés jusqu'à T_end (comme avant)
+# - Prix par bouteille éditables (0.33 L et 0.75 L)
 # =========================
 
 st.set_page_config(page_title="Optimiseur de production — 64 hL / 1–2 goûts", page_icon="🧪", layout="wide")
 
 ALLOWED_FORMATS = {(12, 0.33), (6, 0.75), (4, 0.75)}
 ROUND_TO_CARTON = True
-VOL_TOL = 0.02   # tolérance sur 0.33 / 0.75 (L)
+VOL_TOL = 0.02
 EPS = 1e-9
 
-# ---------- Sidebar (fixe) ----------
+# ---------- Sidebar ----------
 with st.sidebar:
     st.header("Paramètres")
     volume_cible = st.number_input(
@@ -45,12 +48,11 @@ with st.sidebar:
 
 # ---------- Header ----------
 st.title("🧪 Optimiseur de production — 64 hL / 1–2 goûts")
-st.caption("Sélection auto (autonomie + ventes), plan par formats pour écoulement simultané, et estimation des pertes de CA (prix éditables).")
+st.caption("Sélection auto (autonomie + ventes), plan par formats, et pertes CA (vue principale : aucune production).")
 
 # ---------- Upload ----------
 uploaded = st.file_uploader("Dépose ton fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"])
 
-# ---------- Utils : détection header ----------
 def detect_header_row(df_raw: pd.DataFrame) -> int:
     must = {"Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"}
     for i in range(min(10, len(df_raw))):
@@ -58,16 +60,11 @@ def detect_header_row(df_raw: pd.DataFrame) -> int:
             return i
     return 0
 
-# ---------- Utils : filtrer lignes à fond noir ----------
 def rows_to_keep_by_fill(excel_bytes: bytes, header_idx: int) -> list[bool]:
-    """
-    Renvoie une liste booléenne (True=à garder) pour les lignes de données,
-    en excluant toute ligne qui contient AU MOINS une cellule avec un fond noir.
-    """
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
     ws = wb[wb.sheetnames[0]]
-    start_row = header_idx + 2  # données juste après l'en-tête
+    start_row = header_idx + 2
     keep = []
     for r in range(start_row, ws.max_row + 1):
         is_black = False
@@ -81,22 +78,17 @@ def rows_to_keep_by_fill(excel_bytes: bytes, header_idx: int) -> list[bool]:
         keep.append(not is_black)
     return keep
 
-# ---------- Lecture Excel (avec filtre fond noir) ----------
 def read_input_excel(uploaded_file) -> pd.DataFrame:
-    file_bytes = uploaded_file.read()  # on lit une seule fois
-    # 1) détecter l'en-tête
+    file_bytes = uploaded_file.read()
     raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
     header_idx = detect_header_row(raw)
-    # 2) lire les données avec l'en-tête
     df = pd.read_excel(io.BytesIO(file_bytes), header=header_idx)
-    # 3) filtrer les lignes au fond noir
     keep_mask = rows_to_keep_by_fill(file_bytes, header_idx)
     if len(keep_mask) < len(df):
         keep_mask = keep_mask + [True] * (len(df) - len(keep_mask))
     df = df.iloc[[i for i, k in enumerate(keep_mask) if k]].reset_index(drop=True)
     return df
 
-# --------- Parse "Stock" robuste ---------
 def parse_stock(text: str):
     if pd.isna(text): return np.nan, np.nan
     s = str(text)
@@ -110,20 +102,15 @@ def parse_stock(text: str):
     ]:
         m = re.search(pat, s, flags=re.IGNORECASE)
         if m:
-            try:
-                nb = int(m.group(1))
-                break
-            except:
-                pass
+            try: nb = int(m.group(1)); break
+            except: pass
 
     vol_l = None
     m_l = re.findall(r"(\d+(?:[.,]\d+)?)\s*[lL]", s)
-    if m_l:
-        vol_l = float(m_l[-1].replace(",", "."))
+    if m_l: vol_l = float(m_l[-1].replace(",", "."))
     else:
         m_cl = re.findall(r"(\d+(?:[.,]\d+)?)\s*c[lL]", s)
-        if m_cl:
-            vol_l = float(m_cl[-1].replace(",", ".")) / 100.0
+        if m_cl: vol_l = float(m_cl[-1].replace(",", ".")) / 100.0
 
     if nb is None or vol_l is None:
         m_combo = re.search(r"(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*([lc]l?)", s, flags=re.IGNORECASE)
@@ -135,10 +122,8 @@ def parse_stock(text: str):
                 vol2 = val if unit.startswith("l") else val/100.0
                 if nb is None: nb = nb2
                 if vol_l is None: vol_l = vol2
-            except:
-                pass
+            except: pass
 
-    # Secours pour 4×75 cL
     if (nb is None or np.isnan(nb)) and vol_l is not None and abs(vol_l - 0.75) <= VOL_TOL:
         if re.search(r"(?:\b4\s*[x×]\b|Carton\s+de\s*4\b|4\s+Bouteilles?)", s, flags=re.IGNORECASE):
             nb = 4
@@ -161,49 +146,41 @@ def is_allowed_format(nb_bottles, vol_l, stock_txt: str) -> bool:
             return True
     return False
 
-# ---------- Coeur de calcul ----------
 def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list, window_days):
     required = ["Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]
     miss = [c for c in required if c not in df_in.columns]
-    if miss:
-        raise ValueError(f"Colonnes manquantes: {miss}")
+    if miss: raise ValueError(f"Colonnes manquantes: {miss}")
 
     df = df_in[required].copy()
     for c in ["Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]:
         df[c] = safe_num(df[c])
 
-    # Parsing & filtre formats (après exclusions par cases et/ou manuel plus tard)
     parsed = df["Stock"].apply(parse_stock)
     df[["Bouteilles/carton", "Volume bouteille (L)"]] = pd.DataFrame(parsed.tolist(), index=df.index)
     mask_allowed = df.apply(lambda r: is_allowed_format(r["Bouteilles/carton"], r["Volume bouteille (L)"], str(r["Stock"])), axis=1)
     df = df.loc[mask_allowed].reset_index(drop=True)
 
-    # Volumes/carton
     df["Volume/carton (hL)"] = (df["Bouteilles/carton"] * df["Volume bouteille (L)"]) / 100.0
-    # Lignes valides
     df = df.dropna(subset=["Produit", "Volume/carton (hL)", "Volume vendu (hl)", "Volume disponible (hl)"]).reset_index(drop=True)
 
-    df_all_formats = df.copy()  # copie avant sélection goûts
+    df_all_formats = df.copy()
 
-    # Exclusions via liste (cases à cocher)
     if exclude_list:
         df = df[~df["Produit"].astype(str).str.strip().isin(exclude_list)]
         df_all_formats = df_all_formats[~df_all_formats["Produit"].astype(str).str.strip().isin(exclude_list)]
 
-    # Sélection manuelle optionnelle
     if manual_keep:
         keep = [g.strip() for g in manual_keep]
         df = df[df["Produit"].astype(str).str.strip().isin(keep)]
         df_all_formats = df_all_formats[df_all_formats["Produit"].astype(str).str.strip().isin(keep)]
 
-    # ---------- Sélection intelligente des goûts ----------
     agg = df.groupby("Produit").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
     )
     agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
     agg["jours_autonomie"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
-    agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)  # ≈ vitesse^2 / stock
+    agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)
     agg = agg.sort_values(by=["score_urgence", "jours_autonomie", "ventes_hl"], ascending=[False, True, False])
 
     if not manual_keep:
@@ -219,7 +196,6 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
     if len(gouts_cibles) == 0:
         raise ValueError("Aucun goût sélectionné (tout a peut-être été exclu).")
 
-    # ---------- Calculs de production ----------
     df_calc = df_selected.copy()
     if nb_gouts == 1:
         df_calc["Somme ventes (hL) par goût"] = df_calc.groupby("Produit")["Volume vendu (hl)"].transform("sum")
@@ -270,19 +246,16 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
 
         cap_resume = f"{volume_cible:.2f} hL au total (2 goûts)"
 
-    # Cartons (exact + arrondi interne)
     df_calc["Cartons à produire (exact)"] = df_calc["X_adj (hL)"] / df_calc["Volume/carton (hL)"]
     if ROUND_TO_CARTON:
         df_calc["Cartons à produire (arrondi)"] = np.floor(df_calc["Cartons à produire (exact)"] + 0.5).astype("Int64")
         df_calc["Volume produit arrondi (hL)"] = df_calc["Cartons à produire (arrondi)"] * df_calc["Volume/carton (hL)"]
 
-    # Sortie simplifiée
     df_min = df_calc[[
         "Produit", "Stock",
         "Cartons à produire (exact)", "Cartons à produire (arrondi)", "Volume produit arrondi (hL)"
     ]].sort_values(["Produit", "Stock"]).reset_index(drop=True)
 
-    # Transparence sélection
     agg_full = df.groupby("Produit").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
@@ -299,9 +272,9 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         "score_urgence": "Score urgence"
     })
 
-    return df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all_formats
+    return df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all_formats, agg_full
 
-# ---------- Lecture + UI dynamique (exclusions/manuel) ----------
+# ---------- Flow ----------
 if uploaded is None:
     st.info("💡 Charge un fichier Excel pour commencer.")
     st.stop()
@@ -312,19 +285,16 @@ except Exception as e:
     st.error(f"Erreur de lecture : {e}")
     st.stop()
 
-# UI dynamique : exclusions par cases + sélection manuelle optionnelle
 with st.sidebar:
     all_gouts = sorted(pd.Series(df_in.get("Produit", pd.Series(dtype=str))).dropna().astype(str).unique())
     excluded_gouts = st.multiselect("🚫 Exclure certains goûts", options=all_gouts, default=[])
-
     use_manual = st.checkbox("Sélection manuelle DES goûts à produire", value=False, help="Sinon : sélection automatique (autonomie + ventes).")
     manual_keep = None
     if use_manual:
         manual_keep = st.multiselect("Choisis les goûts à produire", options=[g for g in all_gouts if g not in excluded_gouts], default=[])
 
-# ---------- Calcul principal ----------
 try:
-    df_min, cap_resume, gouts_cibles, synth_sel, df_selected_calc, df_all_formats = compute_plan(
+    df_min, cap_resume, gouts_cibles, synth_sel, df_selected_calc, df_all_formats, agg_full = compute_plan(
         df_in=df_in,
         volume_cible=volume_cible,
         nb_gouts=nb_gouts,
@@ -337,35 +307,48 @@ except Exception as e:
     st.error(f"Erreur de calcul : {e}")
     st.stop()
 
-# ---------- Estimation des pertes de CA (avec PRIX SAISIS) ----------
+# ---------- Prix & vitesses ----------
 df_all = df_all_formats.copy()
 df_all["vitesse_hL_j"] = df_all["Volume vendu (hl)"] / max(float(window_days), 1.0)
 
-# Prix par hL selon prix saisis
 def revenue_per_hL(vol_bottle_L: float) -> float:
     if pd.isna(vol_bottle_L): return 0.0
     if abs(vol_bottle_L - 0.33) <= VOL_TOL:
-        price = price_033
-        vol_key = 0.33
+        price = price_033; vol_key = 0.33
     elif abs(vol_bottle_L - 0.75) <= VOL_TOL:
-        price = price_075
-        vol_key = 0.75
+        price = price_075; vol_key = 0.75
     else:
         return 0.0
-    bottles_per_hL = 100.0 / vol_key  # nb bouteilles par hL
+    bottles_per_hL = 100.0 / vol_key
     return bottles_per_hL * price
 
 df_all["€_par_hL"] = df_all["Volume bouteille (L)"].apply(revenue_per_hL)
 df_all["€_par_j"] = df_all["vitesse_hL_j"] * df_all["€_par_hL"]
 
-# Horizon T_end = date d'épuisement commune des goûts sélectionnés
+# ---------- VUE PRINCIPALE : pertes si on NE PRODUIT RIEN (tous les goûts) ----------
+agg_all = df_all.groupby("Produit").agg(
+    vitesse_hL_j=("vitesse_hL_j", "sum"),
+    stock_hL=("Volume disponible (hl)", "sum"),
+    euro_par_j=("€_par_j", "sum"),
+).reset_index()
+agg_all["autonomie_j"] = np.where(agg_all["vitesse_hL_j"] > 0, agg_all["stock_hL"] / agg_all["vitesse_hL_j"], np.inf)
+agg_all["jours_perdus"] = np.clip(float(window_days) - agg_all["autonomie_j"], a_min=0.0, a_max=None)
+agg_all["Perte (€)"] = agg_all["jours_perdus"] * agg_all["euro_par_j"]
+pertes_tous_aucune_prod = agg_all[["Produit", "autonomie_j", "euro_par_j", "Perte (€)"]].copy()
+pertes_tous_aucune_prod = pertes_tous_aucune_prod.sort_values("Perte (€)", ascending=False)
+pertes_tous_aucune_prod.rename(columns={
+    "autonomie_j": "Autonomie (jours)",
+    "euro_par_j": "CA/jour (€)",
+}, inplace=True)
+perte_totale_aucune = float(pertes_tous_aucune_prod["Perte (€)"].sum()) if len(pertes_tous_aucune_prod) else 0.0
+
+# ---------- (Optionnel) : pertes des NON sélectionnés jusqu'à T_end (ancienne vue) ----------
 df_sel = df_selected_calc.copy()
 df_sel["vitesse_hL_j"] = df_sel["Volume vendu (hl)"] / max(float(window_days), 1.0)
 total_stock_plus_prod = (df_sel["Volume disponible (hl)"] + df_sel.get("X_adj (hL)", 0)).sum()
 total_speed = df_sel["vitesse_hL_j"].sum()
 T_end = np.inf if total_speed <= EPS else total_stock_plus_prod / total_speed
 
-# Pertes sur les goûts NON sélectionnés (jusqu'à T_end)
 df_non_sel = df_all[~df_all["Produit"].isin(gouts_cibles)].copy()
 if np.isinf(T_end) or T_end <= 0:
     df_non_sel["Perte (€)"] = 0.0
@@ -375,9 +358,8 @@ else:
                                      np.inf)
     df_non_sel["jours_perdus"] = np.clip(T_end - df_non_sel["t_rup_j"], a_min=0.0, a_max=None)
     df_non_sel["Perte (€)"] = df_non_sel["jours_perdus"] * df_non_sel["€_par_j"]
-
-pertes_par_gout = df_non_sel.groupby("Produit", as_index=False)["Perte (€)"].sum().sort_values("Perte (€)", ascending=False)
-perte_totale = float(pertes_par_gout["Perte (€)"].sum()) if len(pertes_par_gout) else 0.0
+pertes_non_sel_Tend = df_non_sel.groupby("Produit", as_index=False)["Perte (€)"].sum().sort_values("Perte (€)", ascending=False)
+perte_totale_Tend = float(pertes_non_sel_Tend["Perte (€)"].sum()) if len(pertes_non_sel_Tend) else 0.0
 
 # ---------- Affichages ----------
 st.subheader("Résumé")
@@ -399,17 +381,29 @@ with st.expander("Pourquoi ces goûts ? (autonomie & ventes)"):
         use_container_width=True
     )
 
-with st.expander("💶 Impact CA — pertes estimées sur l’horizon de production"):
-    st.write(f"**Horizon d'évaluation (T_end)** ≈ {('∞' if np.isinf(T_end) else f'{T_end:.1f} jours')} (jusqu'à épuisement des goûts sélectionnés).")
+st.subheader("💶 Pertes si on NE PRODUIT RIEN (tous les goûts)")
+colA, colB = st.columns([2,1])
+with colA:
+    st.dataframe(
+        pertes_tous_aucune_prod.style.format({
+            "Autonomie (jours)": lambda v: "∞" if np.isinf(v) else f"{v:.1f}",
+            "CA/jour (€)": "€{:,.0f}",
+            "Perte (€)": "€{:,.0f}",
+        }),
+        use_container_width=True
+    )
+with colB:
+    st.metric("Perte totale estimée (aucune production)", f"€{perte_totale_aucune:,.0f}")
+st.caption("Hypothèse : **aucune production supplémentaire** pour tous les goûts sur la fenêtre sélectionnée. "
+           "Perte par goût = max(fenêtre - autonomie, 0) × CA/jour.")
+
+with st.expander("(Optionnel) Pertes des NON sélectionnés jusqu'à T_end"):
+    st.write(f"**Horizon T_end** ≈ {('∞' if np.isinf(T_end) else f'{T_end:.1f} jours')} (épuisement des goûts sélectionnés).")
     col1, col2 = st.columns([2,1])
     with col1:
-        if len(pertes_par_gout):
-            st.dataframe(pertes_par_gout.style.format({"Perte (€)": "€{:,.0f}"}), use_container_width=True)
+        if len(pertes_non_sel_Tend):
+            st.dataframe(pertes_non_sel_Tend.style.format({"Perte (€)": "€{:,.0f}"}), use_container_width=True)
         else:
             st.info("Aucune perte estimée (pas de goût non sélectionné en rupture sur l'horizon).")
     with col2:
-        st.metric("Perte totale estimée", f"€{perte_totale:,.0f}")
-
-    st.caption("Méthode : T_end = (stocks + production des goûts sélectionnés) / vitesse de vente des goûts sélectionnés. "
-               "Perte d’un goût non sélectionné = max(T_end - temps jusqu'à rupture, 0) × CA/jour. "
-               "CA/jour = (Volume vendu/jour) × (bouteilles/hL) × prix bouteille (saisis ci-dessus).")
+        st.metric("Perte totale (jusqu'à T_end)", f"€{perte_totale_Tend:,.0f}")
