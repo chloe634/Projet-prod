@@ -5,21 +5,19 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# Optimiseur de production (v4.0)
-# - Sélection intelligente des goûts par score d'urgence :
-#     score = vitesse_de_vente / (jours_autonomie + eps)
-#   (≈ vitesse^2 / stock) → priorise faible autonomie ET forte vente
-# - 1 goût : 64 hL PAR goût
-# - 2 goûts : 64 hL AU TOTAL répartis globalement (épuisement simultané)
-# - Formats appliqués EN INTERNE : 12×0.33L, 6×0.75L, 4×0.75L
-# - Arrondi au carton (half-up) appliqué en interne
+# Optimiseur de production (v4.1)
+# - Sélection intelligente des goûts: score = vitesse_de_vente / (jours_autonomie + eps)
+# - 1 goût : 64 hL PAR goût, 2 goûts : 64 hL AU TOTAL (épuisement simultané)
+# - Formats internes: 12×0.33 L, 6×0.75 L, 4×0.75 L (parseur robuste)
+# - Arrondi au carton (half-up)
+# - Lecture Excel: ignore les lignes contenant au moins UNE cellule au fond noir
 # =========================
 
 st.set_page_config(page_title="Optimiseur de production — 64 hL / 1–2 goûts", page_icon="🧪", layout="wide")
 
 ALLOWED_FORMATS = {(12, 0.33), (6, 0.75), (4, 0.75)}
 ROUND_TO_CARTON = True
-VOL_TOL = 0.02                # tolérance sur 0.33 / 0.75
+VOL_TOL = 0.02   # tolérance sur 0.33 / 0.75 (L)
 EPS = 1e-9
 
 # ---------- Sidebar ----------
@@ -37,7 +35,6 @@ with st.sidebar:
     )
 
     with st.expander("Options avancées"):
-        # Sert uniquement à estimer la vitesse de vente journalière
         window_days = st.number_input("Fenêtre de ventes (jours)", min_value=7, max_value=120, value=60, step=1)
 
     st.markdown("---")
@@ -47,12 +44,12 @@ with st.sidebar:
 
 # ---------- Header ----------
 st.title("🧪 Optimiseur de production — 64 hL / 1–2 goûts")
-st.caption("Sélection automatique des goûts selon autonomie et ventes, puis calcul de production par formats pour écoulement simultané.")
+st.caption("Sélection automatique des goûts (autonomie + ventes), calcul par formats pour écoulement simultané des stocks.")
 
 # ---------- Upload ----------
 uploaded = st.file_uploader("Dépose ton fichier Excel (.xlsx/.xls)", type=["xlsx", "xls"])
 
-# ---------- Utils ----------
+# ---------- Utils : détection header ----------
 def detect_header_row(df_raw: pd.DataFrame) -> int:
     must = {"Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"}
     for i in range(min(10, len(df_raw))):
@@ -60,10 +57,43 @@ def detect_header_row(df_raw: pd.DataFrame) -> int:
             return i
     return 0
 
-def read_input_excel(file) -> pd.DataFrame:
-    raw = pd.read_excel(file, header=None)
+# ---------- Utils : filtrer lignes à fond noir ----------
+def rows_to_keep_by_fill(excel_bytes: bytes, header_idx: int) -> list[bool]:
+    """
+    Renvoie une liste booléenne (True=à garder) pour les lignes de données,
+    en excluant toute ligne qui contient AU MOINS une cellule avec un fond noir.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    start_row = header_idx + 2  # données juste après l'en-tête
+    keep = []
+    for r in range(start_row, ws.max_row + 1):
+        is_black = False
+        for cell in ws[r]:
+            fill = cell.fill
+            if fill and fill.fill_type:
+                rgb = getattr(getattr(fill, "fgColor", None), "rgb", None) or getattr(getattr(fill, "start_color", None), "rgb", None)
+                if rgb and rgb[-6:].upper() == "000000":
+                    is_black = True
+                    break
+        keep.append(not is_black)
+    return keep
+
+# ---------- Lecture Excel (avec filtre fond noir) ----------
+def read_input_excel(uploaded_file) -> pd.DataFrame:
+    file_bytes = uploaded_file.read()  # on lit une seule fois
+    # 1) détecter l'en-tête
+    raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
     header_idx = detect_header_row(raw)
-    return pd.read_excel(file, header=header_idx)
+    # 2) lire les données avec l'en-tête
+    df = pd.read_excel(io.BytesIO(file_bytes), header=header_idx)
+    # 3) filtrer les lignes au fond noir
+    keep_mask = rows_to_keep_by_fill(file_bytes, header_idx)
+    if len(keep_mask) < len(df):
+        keep_mask = keep_mask + [True] * (len(df) - len(keep_mask))
+    df = df.iloc[[i for i, k in enumerate(keep_mask) if k]].reset_index(drop=True)
+    return df
 
 # --------- Parse "Stock" robuste ---------
 def parse_stock(text: str):
@@ -79,15 +109,20 @@ def parse_stock(text: str):
     ]:
         m = re.search(pat, s, flags=re.IGNORECASE)
         if m:
-            try: nb = int(m.group(1)); break
-            except: pass
+            try:
+                nb = int(m.group(1))
+                break
+            except:
+                pass
 
     vol_l = None
     m_l = re.findall(r"(\d+(?:[.,]\d+)?)\s*[lL]", s)
-    if m_l: vol_l = float(m_l[-1].replace(",", "."))
+    if m_l:
+        vol_l = float(m_l[-1].replace(",", "."))
     else:
         m_cl = re.findall(r"(\d+(?:[.,]\d+)?)\s*c[lL]", s)
-        if m_cl: vol_l = float(m_cl[-1].replace(",", ".")) / 100.0
+        if m_cl:
+            vol_l = float(m_cl[-1].replace(",", ".")) / 100.0
 
     if nb is None or vol_l is None:
         m_combo = re.search(r"(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*([lc]l?)", s, flags=re.IGNORECASE)
@@ -99,9 +134,10 @@ def parse_stock(text: str):
                 vol2 = val if unit.startswith("l") else val/100.0
                 if nb is None: nb = nb2
                 if vol_l is None: vol_l = vol2
-            except: pass
+            except:
+                pass
 
-    # Secours pour 4×75cL
+    # Secours pour 4×75 cL : si on voit 0.75 L et un motif "4x / ×4 / Carton de 4 / 4 Bouteilles"
     if (nb is None or np.isnan(nb)) and vol_l is not None and abs(vol_l - 0.75) <= VOL_TOL:
         if re.search(r"(?:\b4\s*[x×]\b|Carton\s+de\s*4\b|4\s+Bouteilles?)", s, flags=re.IGNORECASE):
             nb = 4
@@ -124,11 +160,12 @@ def is_allowed_format(nb_bottles, vol_l, stock_txt: str) -> bool:
             return True
     return False
 
-# ---------- Core calc ----------
+# ---------- Coeur de calcul ----------
 def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list, window_days):
     required = ["Produit", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]
     miss = [c for c in required if c not in df_in.columns]
-    if miss: raise ValueError(f"Colonnes manquantes: {miss}")
+    if miss:
+        raise ValueError(f"Colonnes manquantes: {miss}")
 
     df = df_in[required].copy()
     for c in ["Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]:
@@ -152,27 +189,20 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         df = df[df["Produit"].astype(str).str.strip().isin(keep)]
 
     # ---------- Sélection intelligente des goûts ----------
-    # Agrégation par goût
     agg = df.groupby("Produit").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
     )
-    # vitesse de vente (hL/jour)
     agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
-    # jours d'autonomie
     agg["jours_autonomie"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
-    # score d'urgence : plus grand = plus prioritaire
     agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)  # ≈ vitesse^2 / stock
-    # tri final (score desc, jours asc, ventes desc)
     agg = agg.sort_values(by=["score_urgence", "jours_autonomie", "ventes_hl"], ascending=[False, True, False])
 
-    # Choix des goûts
     if not manual_keep:
         gouts_cibles = agg.index.tolist()[:nb_gouts]
         df = df[df["Produit"].isin(gouts_cibles)]
     else:
         gouts_cibles = sorted(set(df["Produit"]))
-        # Si l'utilisateur a choisi plus de goûts que nb_gouts, on garde les mieux classés
         if len(gouts_cibles) > nb_gouts:
             order = [g for g in agg.index if g in gouts_cibles]
             gouts_cibles = order[:nb_gouts]
@@ -243,7 +273,7 @@ def compute_plan(df_in, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, ex
         "Cartons à produire (exact)", "Cartons à produire (arrondi)", "Volume produit arrondi (hL)"
     ]].sort_values(["Produit", "Stock"]).reset_index(drop=True)
 
-    # Synthèse de sélection (pour transparence)
+    # Transparence sélection
     synth_sel = agg.loc[gouts_cibles][["ventes_hl", "stock_hl", "vitesse_j", "jours_autonomie", "score_urgence"]].copy()
     synth_sel = synth_sel.rename(columns={
         "ventes_hl": "Ventes 2 mois (hL)",
@@ -291,10 +321,13 @@ st.subheader("Production simplifiée")
 st.dataframe(df_min.head(200), use_container_width=True)
 
 with st.expander("Pourquoi ces goûts ? (autonomie & ventes)"):
-    st.dataframe(synth_sel.style.format({
-        "Ventes 2 mois (hL)": "{:.2f}",
-        "Stock (hL)": "{:.2f}",
-        "Vitesse (hL/j)": "{:.3f}",
-        "Autonomie (jours)": lambda v: "∞" if np.isinf(v) else f"{v:.1f}",
-        "Score urgence": "{:.6f}",
-    }), use_container_width=True)
+    st.dataframe(
+        synth_sel.style.format({
+            "Ventes 2 mois (hL)": "{:.2f}",
+            "Stock (hL)": "{:.2f}",
+            "Vitesse (hL/j)": "{:.3f}",
+            "Autonomie (jours)": lambda v: "∞" if np.isinf(v) else f"{v:.1f}",
+            "Score urgence": "{:.6f}",
+        }),
+        use_container_width=True
+    )
