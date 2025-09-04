@@ -46,50 +46,71 @@ def slugify(s: str) -> str:
     return s
 
 def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
+    """
+    Ordre de recherche:
+      0) assets/image_map.csv si présent (canonical -> filename), insensible aux accents/espaces/casse
+      1) Fichier nommé par SKU (CITR-33.webp) puis racine (CITR.webp)
+      2) Fichier nommé par slug du goût (mangue-passion.webp)
+    """
+
+    import os, csv, unicodedata, re as _re
+
+    def _norm_key(s: str) -> str:
+        # supprime accents, met en minuscules, condense espaces
+        s = str(s or "")
+        s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+        s = _re.sub(r"\s+", " ", s).strip().lower()
+        return s
+
     # 0) mapping optionnel assets/image_map.csv
-    import os, csv
     map_csv = os.path.join(images_dir, "image_map.csv")
     if os.path.exists(map_csv) and flavor:
-        try:
-            # charge une fois (mini cache)
-            if not hasattr(find_image_path, "_imgmap"):
+        # on tente séparateur virgule puis point-virgule
+        loaded = False
+        for sep in (",", ";"):
+            try:
                 d = {}
                 with open(map_csv, "r", encoding="utf-8") as f:
-                    for row in csv.DictReader(f):
-                        key = (row.get("canonical") or "").strip()
-                        fn  = (row.get("filename") or "").strip()
-                        if key and fn:
-                            d[key.lower()] = fn
-                find_image_path._imgmap = d
-            fn = find_image_path._imgmap.get(str(flavor).lower())
+                    rdr = csv.DictReader(f, delimiter=sep)
+                    if "canonical" in (c.lower() for c in rdr.fieldnames or []) and "filename" in (c.lower() for c in rdr.fieldnames or []):
+                        for row in rdr:
+                            cano = (row.get("canonical") or row.get("Canonical") or "").strip()
+                            fn   = (row.get("filename")  or row.get("Filename")  or "").strip()
+                            if cano and fn:
+                                d[_norm_key(cano)] = fn
+                        loaded = True
+                        break
+            except Exception:
+                pass
+        if loaded:
+            fn = d.get(_norm_key(flavor))
             if fn:
                 p = os.path.join(images_dir, fn)
-                if os.path.exists(p): 
-                    return p
-        except Exception:
-            pass
+                if os.path.exists(p):
+                    return p  # mapping trouvé
 
-    # 1) priorité SKU exact (CITR-33.png)
+    # 1) priorité SKU exact (ex: CITR-33.webp), puis racine SKU (CITR.webp)
     if sku:
-        base_sku = sku
         for ext in IMG_EXTS:
-            p = os.path.join(images_dir, f"{base_sku}{ext}")
-            if os.path.exists(p): return p
-        # fallback racine sans format (CITR.png)
-        import re as _re
-        base_root = _re.sub(r"-\d+$", "", base_sku)
+            p = os.path.join(images_dir, f"{sku}{ext}")
+            if os.path.exists(p):
+                return p
+        base_root = _re.sub(r"-\d+$", "", sku)
         for ext in IMG_EXTS:
             p = os.path.join(images_dir, f"{base_root}{ext}")
-            if os.path.exists(p): return p
+            if os.path.exists(p):
+                return p
 
-    # 2) slug du goût canonique (mangue-passion.webp, etc.)
+    # 2) slug du goût canonique (mangue-passion.webp)
     if flavor:
         s = slugify(flavor)
         for ext in IMG_EXTS:
             p = os.path.join(images_dir, f"{s}{ext}")
-            if os.path.exists(p): return p
+            if os.path.exists(p):
+                return p
 
     return None
+
 
 def load_image_bytes(path: str):
     if not path or not os.path.exists(path): return None
