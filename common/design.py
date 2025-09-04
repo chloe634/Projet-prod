@@ -112,25 +112,41 @@ def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
     return None
 
 
+import os, base64
 from io import BytesIO
 from PIL import Image
 
 def load_image_bytes(path: str):
-    """Retourne des bytes PNG si possible, sinon les bytes bruts du fichier."""
-    import os
+    """
+    Retourne une valeur affichable par ImageColumn :
+    - Si possible : bytes PNG (compat universelle).
+    - Sinon (ex. WEBP sans plugin Pillow) : data-URL 'data:image/...;base64,...'
+    - Sinon : None.
+    """
     if not path or not os.path.exists(path):
         return None
+    ext = os.path.splitext(path)[1].lower()
+    # 1) tentative conversion PNG via Pillow
     try:
         im = Image.open(path)
-        # si possible, on convertit en PNG (universel)
         im = im.convert("RGBA")
         buf = BytesIO()
         im.save(buf, format="PNG")
-        return buf.getvalue()
+        return buf.getvalue()            # ✅ ImageColumn sait afficher des bytes PNG
     except Exception:
-        # fallback: octets bruts (utile si WEBP sans plugin)
+        # 2) fallback : on renvoie une data-URL que le navigateur sait décoder
         try:
             with open(path, "rb") as f:
-                return f.read()
+                raw = f.read()
+            # mime basique selon l’extension
+            mime = {
+                ".webp": "image/webp",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+            }.get(ext, "image/octet-stream")
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{mime};base64,{b64}"   # ✅ URL affichable sans Pillow
         except Exception:
             return None
