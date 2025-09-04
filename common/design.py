@@ -112,10 +112,25 @@ def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
     return None
 
 
-def load_image_bytes(path: str):
-    if not path or not os.path.exists(path): return None
-    im = Image.open(path).convert("RGBA")
-    buf = BytesIO()
-    im.save(buf, format="PNG")
-    return buf.getvalue()
+from io import BytesIO
+from PIL import Image
 
+def load_image_bytes(path: str):
+    """Retourne des bytes PNG si possible, sinon les bytes bruts du fichier."""
+    import os
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        im = Image.open(path)
+        # si possible, on convertit en PNG (universel)
+        im = im.convert("RGBA")
+        buf = BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        # fallback: octets bruts (utile si WEBP sans plugin)
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except Exception:
+            return None
