@@ -4,3 +4,4 @@ numpy
 openpyxl
 pillow
 pyyaml
+xlrd
