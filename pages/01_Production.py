@@ -88,11 +88,12 @@ st.data_editor(
     ]],
     use_container_width=True,
     hide_index=True,
-    disabled=True,  # lecture seule
+    disabled=True,
     column_config={
         "Image": st.column_config.ImageColumn("Image", width="small"),
         "GoutCanon": "Goût",
         "Volume produit arrondi (hL)": st.column_config.NumberColumn(format="%.2f"),
     },
 )
+
 
