@@ -75,6 +75,9 @@ df_view["__img_path"] = [
     for p, g in zip(df_view["Produit"], df_view["GoutCanon"])
 ]
 df_view["Image"] = df_view["__img_path"].apply(load_image_bytes)
+with st.expander("🔎 Debug images (temporaire)"):
+    st.dataframe(df_view[["GoutCanon", "__img_path"]], use_container_width=True)
+
 
 # ---------- Tableau ----------
 st.dataframe(
