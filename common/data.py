@@ -28,11 +28,36 @@ def get_paths():
 @lru_cache(maxsize=2)
 def read_table():
     main_table, _, _ = get_paths()
+    import os, pandas as pd
+
     if not os.path.exists(main_table):
+        # Pas de fichier -> DataFrame vide
         return pd.DataFrame()
-    if main_table.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(main_table, header=None)  # brut (pour détecter l'en-tête)
-    return pd.read_csv(main_table, sep=";", engine="python", header=None)
+
+    lower = main_table.lower()
+    try:
+        if lower.endswith((".xlsx", ".xlsm", ".xltx", ".xltm")):
+            # Formats Excel modernes -> openpyxl
+            return pd.read_excel(main_table, engine="openpyxl", header=None)
+        elif lower.endswith(".xls"):
+            # Ancien Excel -> xlrd (nécessite xlrd dans requirements)
+            return pd.read_excel(main_table, engine="xlrd", header=None)
+        elif lower.endswith((".csv", ".txt")):
+            # CSV/TXT du repo (séparateur ; si besoin adapte)
+            try:
+                return pd.read_csv(main_table, sep=";", engine="python", header=None)
+            except Exception:
+                return pd.read_csv(main_table, sep=",", engine="python", header=None)
+        else:
+            # Fallback: on tente openpyxl puis xlrd
+            try:
+                return pd.read_excel(main_table, engine="openpyxl", header=None)
+            except Exception:
+                return pd.read_excel(main_table, engine="xlrd", header=None)
+    except Exception as e:
+        # On remonte une table vide pour que l'accueil n’explose pas,
+        # et on affiche l’erreur côté pages quand on relira le fichier proprement.
+        return pd.DataFrame()
 
 @lru_cache(maxsize=2)
 def read_flavor_map():
