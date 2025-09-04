@@ -46,6 +46,29 @@ def slugify(s: str) -> str:
     return s
 
 def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
+    # 0) mapping optionnel assets/image_map.csv
+    import os, csv
+    map_csv = os.path.join(images_dir, "image_map.csv")
+    if os.path.exists(map_csv) and flavor:
+        try:
+            # charge une fois (mini cache)
+            if not hasattr(find_image_path, "_imgmap"):
+                d = {}
+                with open(map_csv, "r", encoding="utf-8") as f:
+                    for row in csv.DictReader(f):
+                        key = (row.get("canonical") or "").strip()
+                        fn  = (row.get("filename") or "").strip()
+                        if key and fn:
+                            d[key.lower()] = fn
+                find_image_path._imgmap = d
+            fn = find_image_path._imgmap.get(str(flavor).lower())
+            if fn:
+                p = os.path.join(images_dir, fn)
+                if os.path.exists(p): 
+                    return p
+        except Exception:
+            pass
+
     # 1) priorité SKU exact (CITR-33.png)
     if sku:
         base_sku = sku
@@ -58,12 +81,14 @@ def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
         for ext in IMG_EXTS:
             p = os.path.join(images_dir, f"{base_root}{ext}")
             if os.path.exists(p): return p
-    # 2) slug du goût canonique
+
+    # 2) slug du goût canonique (mangue-passion.webp, etc.)
     if flavor:
         s = slugify(flavor)
         for ext in IMG_EXTS:
             p = os.path.join(images_dir, f"{s}{ext}")
             if os.path.exists(p): return p
+
     return None
 
 def load_image_bytes(path: str):
