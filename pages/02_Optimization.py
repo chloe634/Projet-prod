@@ -2,8 +2,6 @@ import pandas as pd, streamlit as st
 from common.design import apply_theme, section, kpi
 from common.data import get_paths
 from core.optimizer import (
-    read_input_excel_and_period_from_path,
-    read_input_excel_and_period_from_upload,
     load_flavor_map_from_path,
     apply_canonical_flavor, compute_losses_table_v48
 )
@@ -11,31 +9,16 @@ from core.optimizer import (
 apply_theme("Optimisation & pertes — Ferment Station", "📉")
 section("Optimisation & pertes", "📉")
 
-main_table, flavor_map, _ = get_paths()
-
-with st.sidebar:
-    st.subheader("Source des données")
-    source = st.radio(
-        "Choix",
-        ["GitHub (data/production.xlsx)", "Upload manuel"],
-        index=0
-    )
-    uploaded = None
-    if source == "Upload manuel":
-        uploaded = st.file_uploader("Dépose un Excel (.xlsx / .xls)", type=["xlsx","xls"])
-
-# Lecture selon la source
-try:
-    if source == "GitHub (data/production.xlsx)":
-        df_raw, window_days = read_input_excel_and_period_from_path(main_table)
-    else:
-        if not uploaded:
-            st.info("Dépose un fichier pour continuer.")
-            st.stop()
-        df_raw, window_days = read_input_excel_and_period_from_upload(uploaded)
-except Exception as e:
-    st.error(f"Erreur de lecture des données : {e}")
+# besoin du fichier en mémoire
+if "df_raw" not in st.session_state or "window_days" not in st.session_state:
+    st.warning("Aucun fichier chargé. Va dans **Accueil** pour déposer l'Excel, puis reviens.")
     st.stop()
+
+_, flavor_map, _ = get_paths()
+
+df_raw = st.session_state.df_raw
+window_days = st.session_state.window_days
+st.caption(f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours**")
 
 fm = load_flavor_map_from_path(flavor_map)
 df_in = apply_canonical_flavor(df_raw, fm)
