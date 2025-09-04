@@ -380,3 +380,30 @@ def compute_losses_table_v48(df_in_all: pd.DataFrame, window_days: float, price_
     pertes["Prix moyen (€/hL)"] = pertes["Prix moyen (€/hL)"].round(0)
     return pertes.sort_values("Perte (€)", ascending=False).reset_index(drop=True)
 
+# --- LECTURE EXCEL depuis un UPLOAD Streamlit (sans rien changer ailleurs) ---
+
+def read_input_excel_and_period_from_bytes(file_bytes: bytes):
+    """Même logique que _from_path mais pour des bytes (uploader Streamlit)."""
+    import io, openpyxl
+    raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
+    header_idx = detect_header_row(raw)
+    df = pd.read_excel(io.BytesIO(file_bytes), header=header_idx)
+    keep_mask = rows_to_keep_by_fill(file_bytes, header_idx)
+    if len(keep_mask) < len(df):
+        keep_mask = keep_mask + [True] * (len(df) - len(keep_mask))
+    df = df.iloc[[i for i, k in enumerate(keep_mask) if k]].reset_index(drop=True)
+
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        b2_val = ws["B2"].value
+        wd = parse_days_from_b2(b2_val)
+    except Exception:
+        wd = None
+    return df, (wd if wd and wd > 0 else DEFAULT_WINDOW_DAYS)
+
+def read_input_excel_and_period_from_upload(uploaded_file):
+    """Wrapper pratique pour st.file_uploader (obj upload Streamlit)."""
+    file_bytes = uploaded_file.read()
+    return read_input_excel_and_period_from_bytes(file_bytes)
+
