@@ -75,21 +75,24 @@ df_view["__img_path"] = [
     for p, g in zip(df_view["Produit"], df_view["GoutCanon"])
 ]
 df_view["Image"] = df_view["__img_path"].apply(load_image_bytes)
-with st.expander("🔎 Debug images (temporaire)"):
-    st.dataframe(df_view[["GoutCanon", "__img_path"]], use_container_width=True)
+
+
 
 
 # ---------- Tableau ----------
-st.dataframe(
-    df_view[["Image","GoutCanon","Produit","Stock","Cartons à produire (arrondi)","Bouteilles à produire (arrondi)","Volume produit arrondi (hL)"]],
+st.data_editor(
+    df_view[[
+        "Image","GoutCanon","Produit","Stock",
+        "Cartons à produire (arrondi)","Bouteilles à produire (arrondi)",
+        "Volume produit arrondi (hL)"
+    ]],
     use_container_width=True,
     hide_index=True,
+    disabled=True,  # lecture seule
     column_config={
         "Image": st.column_config.ImageColumn("Image", width="small"),
         "GoutCanon": "Goût",
         "Volume produit arrondi (hL)": st.column_config.NumberColumn(format="%.2f"),
-    }
+    },
 )
 
-with st.expander("Pourquoi ces goûts ?"):
-    st.dataframe(synth_sel, use_container_width=True)
