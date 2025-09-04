@@ -1,9 +1,18 @@
-# Optimiseur de production — Streamlit (64 hL / multi-goûts)
+# Ferment Station — Streamlit (multi-pages)
 
-Cette app calcule automatiquement le nombre de **cartons à produire** par goût + format à partir d’un fichier Excel.
+L'app lit **uniquement** les fichiers du repo (`/data`, `/assets`).  
+Aucune importation locale n'est nécessaire.
 
-## 🚀 Démarrer
+## Structure
+- `app.py` (accueil)
+- `pages/01_Production.py`, `pages/02_Optimisation.py`, `pages/03_Fiche_de_ramasse.py`
+- `common/design.py` (thème & UI)
+- `common/data.py` (config & chemins)
+- `core/optimizer.py` (algorithmes)
+- `data/production.xlsx`, `data/flavor_map.csv`
+- `assets/` (images produits)
 
-### 1) Installer les dépendances
+## Lancer en local (optionnel)
 ```bash
 pip install -r requirements.txt
+streamlit run app.py
