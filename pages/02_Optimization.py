@@ -18,12 +18,17 @@ _, flavor_map, _ = get_paths()
 
 df_raw = st.session_state.df_raw
 window_days = st.session_state.window_days
-st.caption(f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours**")
+
+# ---- SIDEBAR: prix moyen au choix ----
+with st.sidebar:
+    st.header("Paramètres pertes")
+    price_hL = st.number_input("Prix moyen (€/hL)", min_value=0.0, value=500.0, step=10.0, format="%.0f")
+
+st.caption(f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours** — Prix moyen : **€{price_hL:.0f}/hL**")
 
 fm = load_flavor_map_from_path(flavor_map)
 df_in = apply_canonical_flavor(df_raw, fm)
 
-price_hL = 500.0
 pertes = compute_losses_table_v48(df_in, window_days, price_hL)
 
 colA, colB = st.columns([2,1])
