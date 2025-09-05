@@ -6,8 +6,8 @@ pillow
 pyyaml
 xlrd
 reportlab
-python-dateutil
 fpdf2
+python-dateutil
 
 
 
