@@ -50,14 +50,21 @@ def _parse_format_from_text(s: str) -> str | None:
     t = t.replace("×", "x").replace("X", "x")
     m = re.search(r"(\d+)\s*x\s*(\d+)\s*(?:cl|cL|CL)", t)
     if m:
-        nb = int(m.group(1)); vol = int(m.group(2))
-        if nb == 12 and vol in (33, 33_): return "12x33"
-        if nb == 6 and vol == 75:         return "6x75"
-        if nb == 4 and vol == 75:         return "4x75"
-    # quelques variantes fréquentes
-    if re.search(r"12\s*x?\s*33", t): return "12x33"
-    if re.search(r"6\s*x?\s*75",  t): return "6x75"
-    if re.search(r"4\s*x?\s*75",  t): return "4x75"
+        nb = int(m.group(1))
+        vol = int(m.group(2))
+        if nb == 12 and vol == 33:
+            return "12x33"
+        if nb == 6 and vol == 75:
+            return "6x75"
+        if nb == 4 and vol == 75:
+            return "4x75"
+    # variantes sans regex stricte
+    if re.search(r"12\s*x?\s*33", t):
+        return "12x33"
+    if re.search(r"6\s*x?\s*75", t):
+        return "6x75"
+    if re.search(r"4\s*x?\s*75", t):
+        return "4x75"
     return None
 
 def _load_reference_table(path_xlsx: str) -> pd.DataFrame:
