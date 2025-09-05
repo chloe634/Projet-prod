@@ -45,41 +45,51 @@ def _format_tag(s: str) -> str | None:
 
 def _format_from_stock(stock_txt: str) -> str | None:
     """
-    Détection robuste depuis la colonne Stock :
-    - gère les notations en cl (ex: '75 cl') et en L (ex: '0.75L', '0.33L')
-    - supporte 'Carton de ...', 'Pack de ...'
+    Détecte le format à partir d'un libellé Stock très libre :
+    - supporte 0.33L / 0,33 L / 0.75L / 0,75 L
+    - supporte 33cl / 75cl (avec ou sans espace, casse libre)
+    - l'ordre important : d'abord le nb de bouteilles, puis le volume
     """
     if not stock_txt:
         return None
-    s = str(stock_txt).lower().replace("×", "x")
 
-    # --- Cas litres (0.33L, 0.75L) ---
-    m_l = re.search(r"(?:carton|pack).*?(\d+).*?(0[.,]\d+)\s*l", s, flags=re.IGNORECASE)
+    s = str(stock_txt)
+    s_low = s.lower().replace("×", "x")
+
+    # 1) '12x33' / '6x75' explicites (au cas où)
+    m = re.search(r"\b(12|6|4)\s*x\s*(33|75)\b", s_low)
+    if m:
+        nb, vol = int(m.group(1)), int(m.group(2))
+        if nb == 12 and vol == 33: return "12x33"
+        if nb == 6 and vol == 75:  return "6x75"
+        if nb == 4 and vol == 75:  return "4x75"
+
+    # 2) Littres : "... 12 ... 0.33L" (tirets, mots, etc. autorisés)
+    m_l = re.search(r"\b(\d+)\b.*?\b(0[.,]\d+)\s*l\b", s_low, flags=re.IGNORECASE)
     if m_l:
         try:
             nb = int(m_l.group(1))
-            vol = float(m_l.group(2).replace(",", "."))
-            vol_cl = int(round(vol * 100))   # 0.33L -> 33 cl
+            vol_l = float(m_l.group(2).replace(",", "."))
+            vol_cl = int(round(vol_l * 100))  # 0.33 -> 33 ; 0.75 -> 75
             if nb == 12 and vol_cl == 33: return "12x33"
-            if nb == 6 and vol_cl == 75: return "6x75"
-            if nb == 4 and vol_cl == 75: return "4x75"
+            if nb == 6  and vol_cl == 75: return "6x75"
+            if nb == 4  and vol_cl == 75: return "4x75"
         except Exception:
             pass
 
-    # --- Cas centilitres explicites (75cl, 33 cl) ---
-    m_cl = re.search(r"(?:carton|pack).*?(\d+).*?(\d+)\s*c?l", s, flags=re.IGNORECASE)
+    # 3) Centilitres : "... 12 ... 33cl"
+    m_cl = re.search(r"\b(\d+)\b.*?\b(\d+)\s*c?l\b", s_low, flags=re.IGNORECASE)
     if m_cl:
         try:
             nb = int(m_cl.group(1))
-            vol = int(m_cl.group(2))
-            if nb == 12 and vol == 33: return "12x33"
-            if nb == 6 and vol == 75: return "6x75"
-            if nb == 4 and vol == 75: return "4x75"
+            vol_cl = int(m_cl.group(2))
+            if nb == 12 and vol_cl == 33: return "12x33"
+            if nb == 6  and vol_cl == 75: return "6x75"
+            if nb == 4  and vol_cl == 75: return "4x75"
         except Exception:
             pass
 
     return None
-
 
 # ====== Extraction PDF → mapping (Produit -> {format, ref, poids_carton}) ======
 def _parse_reference_pdf(pdf_path: str) -> pd.DataFrame:
