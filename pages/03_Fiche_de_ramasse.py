@@ -112,7 +112,7 @@ def _parse_reference_pdf(pdf_path: str) -> pd.DataFrame:
                         # Exemple de ligne (extrait du PDF fourni) :
                         # "Kéfir Pamplemousse 12x33cl KÉFIR PAMPLEMOUSSE - 12X33CL (12) ... 7,56"
                         l = _norm_text(line)
-                        fmt = _format_tag(l)
+                        fmt = _format_from_stock(stock)
                         if not fmt: 
                             continue
                         # Poids (dernier nombre avec virgule ou point)
