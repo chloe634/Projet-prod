@@ -133,45 +133,48 @@ with col_reset:
 # 2) Téléchargement du modèle Excel rempli
 sp = st.session_state.get("saved_production")
 
-def _deduce_gouts(sp_obj, df_min_cur, gouts_cur):
-    """Renvoie une liste [g1, g2, ...] sans KeyError, par ordre de priorité :
-       1) sp['gouts'] si présent et non vide
-       2) ordre d'apparition dans df_min['GoutCanon']
-       3) gouts_cibles courants
-    """
-    # 1) depuis la sauvegarde si dispo
+def _two_gouts_auto(sp_obj, df_min_cur, gouts_cur):
+    """Retourne [g1, g2] (2 goûts max) en suivant l'ordre du tableau sauvegardé."""
+    # 1) si la sauvegarde contient l'ordre (clé 'gouts')
     if isinstance(sp_obj, dict):
         g_saved = sp_obj.get("gouts")
         if g_saved:
-            return list(g_saved)
+            uniq = []
+            for g in g_saved:
+                if g and g not in uniq:
+                    uniq.append(g)
+            if uniq:
+                return (uniq + [None, None])[:2]
 
-    # 2) depuis df_min affiché (ordre de première apparition)
+    # 2) sinon, ordre d'apparition dans df_min
     if isinstance(df_min_cur, pd.DataFrame) and "GoutCanon" in df_min_cur.columns:
         seen = []
         for g in df_min_cur["GoutCanon"].astype(str).tolist():
-            if g not in seen:
+            if g and g not in seen:
                 seen.append(g)
         if seen:
-            return seen
+            return (seen + [None, None])[:2]
 
-    # 3) fallback : gouts_cibles du calcul courant
-    return list(gouts_cur) if gouts_cur else []
+    # 3) sinon, retomber sur gouts_cibles du calcul courant
+    base = list(gouts_cur) if gouts_cur else []
+    return (base + [None, None])[:2]
 
 if sp:
-    gout_list = _deduce_gouts(sp, sp.get("df_min", df_min), gouts_cibles)
-    g1 = gout_list[0] if len(gout_list) >= 1 else ""
-    g2 = gout_list[1] if len(gout_list) >= 2 else None
+    # Goûts à injecter (pas de sélection manuelle)
+    g1, g2 = _two_gouts_auto(sp, sp.get("df_min", df_min), gouts_cibles)
 
-    TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"  # place ton modèle ici
+    # Chemin du modèle (ta logique actuelle — adapte si tu es passé par config.yaml)
+    TEMPLATE_PATH = TEMPLATE_PATH if 'TEMPLATE_PATH' in locals() else "assets/Fiche de Prod 5K - 250829.xlsx"
 
     try:
         xlsx_bytes = fill_fiche_7000L_xlsx(
             template_path=TEMPLATE_PATH,
             semaine_du=_dt.date.fromisoformat(sp["semaine_du"]),
             ddm=_dt.date.fromisoformat(sp["ddm"]),
-            gout1=g1,
-            gout2=g2,
+            gout1=g1 or "",
+            gout2=g2,   # peut être None → la page droite sera remplie à 0
             df_calc=sp.get("df_calc", df_calc),
+            # sheet_name=SHEET_NAME  # décommente si tu utilises l'option config
         )
 
         semaine_label = _dt.date.fromisoformat(sp["semaine_du"]).strftime("%d-%m-%Y")
@@ -184,10 +187,7 @@ if sp:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-        st.info("Pour un PDF identique, ouvre l'XLSX dans Excel et fais Fichier → Exporter en PDF.")
     except FileNotFoundError:
-        st.error("Modèle introuvable. Place le fichier **assets/Fiche de Prod 250620.xlsx** dans le repo.")
+        st.error("Modèle introuvable. Vérifie le chemin du fichier modèle.")
     except Exception as e:
         st.error(f"Erreur lors du remplissage du modèle : {e}")
-
-
