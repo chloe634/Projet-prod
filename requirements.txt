@@ -7,5 +7,7 @@ pyyaml
 xlrd
 reportlab
 python-dateutil
+fpdf2
+
 
 
