@@ -84,60 +84,34 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str):
     return out
 
 
-def fill_fiche_7000L_xlsx(
-    template_path: str,
-    semaine_du: date,
-    ddm: date,
-    gout1: str,
-    gout2: Optional[str],
-    df_calc: pd.DataFrame,
-) -> bytes:
-    """
-    Remplit la feuille 'Fiche de production 7000 L' du modèle.
-    - D8  = Produit 1 (Goût)
-    - T8  = Produit 2 (Goût) si présent
-    - D10 = DDM (écrase la formule pour respecter la saisie manuelle)
-    - O10 = LOT = DDM sans '/' (écrase la formule)
-    - A20 = Date Fermentation = DDM - 1 an
-    - D15/F15/H15/J15  et  T15/V15/X15/Z15 = cartons par format
-      (par défaut on met tout le 33cl x12 en D15/T15, F15/V15 à 0)
-    Retourne les bytes du classeur XLSX rempli.
-    """
-    wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
-    ws = wb["Fiche de production 7000 L"]  # ⚠️ nom exact du modèle
+    # --- Quantités à produire : mapping de cellules (ajuste si besoin)
+    CELLS_P1 = {  # Produit 1
+        "33_fr":  {"cartons": "D15", "bouteilles": "D16"},
+        "33_niko":{"cartons": "F15", "bouteilles": "F16"},
+        "75x6":   {"cartons": "H15", "bouteilles": "H16"},
+        "75x4":   {"cartons": "J15", "bouteilles": "J16"},
+    }
+    CELLS_P2 = {  # Produit 2
+        "33_fr":  {"cartons": "T15", "bouteilles": "T16"},
+        "33_niko":{"cartons": "V15", "bouteilles": "V16"},
+        "75x6":   {"cartons": "X15", "bouteilles": "X16"},
+        "75x4":   {"cartons": "Z15", "bouteilles": "Z16"},
+    }
 
-    # Produits
-    ws["D8"].value = gout1 or ""
-    ws["T8"].value = gout2 or ""
+    # Produit 1
+    agg1 = _agg_counts_by_format_and_brand(df_calc, gout1)
+    for key, dest in CELLS_P1.items():
+        ws[dest["cartons"]].value    = int(agg1[key]["cartons"])
+        ws[dest["bouteilles"]].value = int(agg1[key]["bouteilles"])
 
-    # DDM & LOT
-    ws["D10"].value = ddm
-    ws["D10"].number_format = "DD/MM/YYYY"
-    lot = ddm.strftime("%d%m%Y")
-    ws["O10"].value = lot
-
-    # Fermentation > Date = DDM - 1 an
-    ferment_date = ddm - relativedelta(years=1)
-    ws["A20"].value = ferment_date
-    ws["A20"].number_format = "DD/MM/YYYY"
-
-    # Quantités à produire (cartons)
-    c33_1, c75_6_1, c75_4_1 = _agg_cartons_by_format(df_calc, gout1)
-    ws["D15"].value = int(c33_1)      # 33cl x12 (France)
-    ws["F15"].value = 0               # 33cl x12 (NIKO) -> on laisse à 0 par défaut
-    ws["H15"].value = int(c75_6_1)    # 75cl x6
-    ws["J15"].value = int(c75_4_1)    # 75cl x4
-
+    # Produit 2 (si présent), sinon zéros
     if gout2:
-        c33_2, c75_6_2, c75_4_2 = _agg_cartons_by_format(df_calc, gout2)
-        ws["T15"].value = int(c33_2)    # 33cl x12 (France)
-        ws["V15"].value = 0             # 33cl x12 (NIKO)
-        ws["X15"].value = int(c75_6_2)  # 75cl x6
-        ws["Z15"].value = int(c75_4_2)  # 75cl x4
+        agg2 = _agg_counts_by_format_and_brand(df_calc, gout2)
+        for key, dest in CELLS_P2.items():
+            ws[dest["cartons"]].value    = int(agg2[key]["cartons"])
+            ws[dest["bouteilles"]].value = int(agg2[key]["bouteilles"])
     else:
-        ws["T15"].value = 0; ws["V15"].value = 0; ws["X15"].value = 0; ws["Z15"].value = 0
+        for key, dest in CELLS_P2.items():
+            ws[dest["cartons"]].value    = 0
+            ws[dest["bouteilles"]].value = 0
 
-    # Laisse toutes les autres formules du modèle telles quelles.
-    bio = io.BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
