@@ -97,10 +97,6 @@ st.data_editor(
 )
 
 # --- Génération Fiche de production (modèle Excel) ---
-import datetime as _dt
-from dateutil.relativedelta import relativedelta
-from common.xlsx_fill import fill_fiche_7000L_xlsx
-
 st.markdown("---")
 st.subheader("Fiche de production (modèle Excel)")
 
@@ -108,27 +104,62 @@ cA, cB = st.columns(2)
 with cA:
     date_semaine = st.date_input("Semaine du", value=_dt.date.today())
 with cB:
+    # DDM par défaut = dans 1 an (tu peux changer)
     ddm_date = st.date_input("DDM", value=_dt.date.today() + relativedelta(years=1))
 
+# 1) Bouton qui fige la proposition courante
 if st.button("💾 Sauvegarder cette production", use_container_width=True):
     st.session_state["saved_production"] = {
         "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         "semaine_du": date_semaine.isoformat(),
         "ddm": ddm_date.isoformat(),
-        "df_calc": df_calc.copy(),
-        "df_min": df_min.copy(),
-        "gouts": gouts_cibles,  # ordre de priorité retourné par compute_plan
+        "df_calc": df_calc.copy(),     # détail complet pour les formats/volumes
+        "df_min": df_min.copy(),       # tableau affiché
+        "gouts": list(gouts_cibles),   # ✅ IMPORTANT : évite le KeyError
     }
     st.success("Production sauvegardée.")
 
-sp = st.session_state.get("saved_production")
-if sp:
-    # Déterminer Produit 1 / 2 depuis les goûts sélectionnés
-    g1 = (sp["gouts"][0] if len(sp["gouts"]) >= 1 else "")
-    g2 = (sp["gouts"][1] if len(sp["gouts"]) >= 2 else None)
+# (optionnel) bouton pour purger une ancienne sauvegarde incompatible
+col_reset, _ = st.columns([1,3])
+with col_reset:
+    if st.button("♻️ Réinitialiser la fiche sauvegardée"):
+        st.session_state.pop("saved_production", None)
+        st.success("Fiche sauvegardée réinitialisée.")
 
-    # Construire l'XLSX rempli à partir du modèle
-    TEMPLATE_PATH = "assets/Fiche de Prod 5K - 250829.xlsx"  # mets ton fichier ici
+# 2) Téléchargement du modèle Excel rempli
+sp = st.session_state.get("saved_production")
+
+def _deduce_gouts(sp_obj, df_min_cur, gouts_cur):
+    """Renvoie une liste [g1, g2, ...] sans KeyError, par ordre de priorité :
+       1) sp['gouts'] si présent et non vide
+       2) ordre d'apparition dans df_min['GoutCanon']
+       3) gouts_cibles courants
+    """
+    # 1) depuis la sauvegarde si dispo
+    if isinstance(sp_obj, dict):
+        g_saved = sp_obj.get("gouts")
+        if g_saved:
+            return list(g_saved)
+
+    # 2) depuis df_min affiché (ordre de première apparition)
+    if isinstance(df_min_cur, pd.DataFrame) and "GoutCanon" in df_min_cur.columns:
+        seen = []
+        for g in df_min_cur["GoutCanon"].astype(str).tolist():
+            if g not in seen:
+                seen.append(g)
+        if seen:
+            return seen
+
+    # 3) fallback : gouts_cibles du calcul courant
+    return list(gouts_cur) if gouts_cur else []
+
+if sp:
+    gout_list = _deduce_gouts(sp, sp.get("df_min", df_min), gouts_cibles)
+    g1 = gout_list[0] if len(gout_list) >= 1 else ""
+    g2 = gout_list[1] if len(gout_list) >= 2 else None
+
+    TEMPLATE_PATH = "assets/Fiche de Prod 5K - 250829.xlsx"  # place ton modèle ici
+
     try:
         xlsx_bytes = fill_fiche_7000L_xlsx(
             template_path=TEMPLATE_PATH,
@@ -136,10 +167,9 @@ if sp:
             ddm=_dt.date.fromisoformat(sp["ddm"]),
             gout1=g1,
             gout2=g2,
-            df_calc=sp["df_calc"],
+            df_calc=sp.get("df_calc", df_calc),
         )
 
-        # Nom de fichier
         semaine_label = _dt.date.fromisoformat(sp["semaine_du"]).strftime("%d-%m-%Y")
         fname_xlsx = f"Fiche de production (semaine du {semaine_label}).xlsx"
 
@@ -150,7 +180,7 @@ if sp:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-        st.info("Pour un PDF strictement identique (avec les formules évaluées), ouvre ce fichier dans Excel et fais **Fichier → Exporter en PDF**.")
+        st.info("Pour un PDF identique, ouvre l'XLSX dans Excel et fais Fichier → Exporter en PDF.")
     except FileNotFoundError:
         st.error("Modèle introuvable. Place le fichier **assets/Fiche de Prod 5K - 250829.xlsx** dans le repo.")
     except Exception as e:
