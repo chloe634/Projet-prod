@@ -16,43 +16,73 @@ def _is_close(a: float, b: float, tol: float = VOL_TOL) -> bool:
     except Exception:
         return False
 
-def _agg_cartons_by_format(df_calc: pd.DataFrame, gout: str) -> Tuple[int,int,int]:
+def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str):
     """
-    Retourne les cartons (arrondis) pour un goût donné par format :
-      - 33cl x12  → pour D15/T15
-      - 75cl x6   → pour H15/X15
-      - 75cl x4   → pour J15/Z15
+    Retourne un dict avec (cartons, bouteilles) pour un goût donné :
+      - 33cl x12 France -> key "33_fr"
+      - 33cl x12 NIKO   -> key "33_niko"
+      - 75cl x6         -> key "75x6"
+      - 75cl x4         -> key "75x4"
+    Règle : en 33cl, si le nom produit contient 'NIKO' -> NIKO, sinon FRANCE.
+            (Et tout libellé contenant 'Kéfir' est rangé FRANCE par défaut.)
     """
+    out = {
+        "33_fr":  {"cartons": 0, "bouteilles": 0},
+        "33_niko":{"cartons": 0, "bouteilles": 0},
+        "75x6":   {"cartons": 0, "bouteilles": 0},
+        "75x4":   {"cartons": 0, "bouteilles": 0},
+    }
     if df_calc is None or not isinstance(df_calc, pd.DataFrame) or df_calc.empty:
-        return 0, 0, 0
+        return out
+
+    req = {"GoutCanon","Produit","Bouteilles/carton","Volume bouteille (L)",
+           "Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"}
+    if any(c not in df_calc.columns for c in req):
+        return out
 
     df = df_calc.copy()
     df = df[df["GoutCanon"].astype(str).str.strip() == str(gout).strip()]
     if df.empty:
-        return 0, 0, 0
+        return out
 
-    # colonnes attendues
-    for c in ["Bouteilles/carton", "Volume bouteille (L)", "Cartons à produire (arrondi)"]:
-        if c not in df.columns:
-            return 0, 0, 0
+    def _add(where: str, ct, bt):
+        out[where]["cartons"]    += int(pd.to_numeric(ct, errors="coerce").fillna(0).sum())
+        out[where]["bouteilles"] += int(pd.to_numeric(bt, errors="coerce").fillna(0).sum())
 
-    # somme par triplet
-    c33x12 = int(pd.to_numeric(
-        df[(df["Bouteilles/carton"]==12) & (_is_close(df["Volume bouteille (L)"], 0.33))]["Cartons à produire (arrondi)"],
-        errors="coerce"
-    ).fillna(0).sum())
+    # 33 cL x12 -> France ou NIKO selon libellé produit
+    mask_33x12 = (df["Bouteilles/carton"]==12) & (_is_close(df["Volume bouteille (L)"], 0.33))
+    if mask_33x12.any():
+        part = df.loc[mask_33x12, ["Produit","Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"]].copy()
+        up = part["Produit"].astype(str).str.upper()
+        is_niko   = up.str.contains("NIKO", na=False)
+        is_kefir  = up.str.contains("KÉFIR|KEFIR", na=False)
 
-    c75x6  = int(pd.to_numeric(
-        df[(df["Bouteilles/carton"]==6)  & (_is_close(df["Volume bouteille (L)"], 0.75))]["Cartons à produire (arrondi)"],
-        errors="coerce"
-    ).fillna(0).sum())
+        # NIKO
+        _add("33_niko",
+             part.loc[is_niko, "Cartons à produire (arrondi)"],
+             part.loc[is_niko, "Bouteilles à produire (arrondi)"])
+        # FRANCE (tout le reste, et on force Kéfir en France)
+        fr_mask = (~is_niko) | is_kefir
+        _add("33_fr",
+             part.loc[fr_mask, "Cartons à produire (arrondi)"],
+             part.loc[fr_mask, "Bouteilles à produire (arrondi)"])
 
-    c75x4  = int(pd.to_numeric(
-        df[(df["Bouteilles/carton"]==4)  & (_is_close(df["Volume bouteille (L)"], 0.75))]["Cartons à produire (arrondi)"],
-        errors="coerce"
-    ).fillna(0).sum())
+    # 75 cL x6
+    mask_75x6 = (df["Bouteilles/carton"]==6) & (_is_close(df["Volume bouteille (L)"], 0.75))
+    if mask_75x6.any():
+        _add("75x6",
+             df.loc[mask_75x6, "Cartons à produire (arrondi)"],
+             df.loc[mask_75x6, "Bouteilles à produire (arrondi)"])
 
-    return c33x12, c75x6, c75x4
+    # 75 cL x4
+    mask_75x4 = (df["Bouteilles/carton"]==4) & (_is_close(df["Volume bouteille (L)"], 0.75))
+    if mask_75x4.any():
+        _add("75x4",
+             df.loc[mask_75x4, "Cartons à produire (arrondi)"],
+             df.loc[mask_75x4, "Bouteilles à produire (arrondi)"])
+
+    return out
+
 
 def fill_fiche_7000L_xlsx(
     template_path: str,
