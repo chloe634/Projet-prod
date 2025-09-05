@@ -148,19 +148,12 @@ def _norm(s) -> str:
 
 def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
     """
-    Repère automatiquement les 4 zones 'France / NIKO / X6 / X4' qui existent
-    deux fois dans le modèle (haut = résumé, bas = zone d'entrée).
-    On renvoie **la paire du BAS** (celle utilisée par les formules).
-    Structure retournée :
-      {
-        "left":  {"header_row": r, "bouteilles_row": r+1, "cartons_row": r+2,
-                  "france": col, "niko": col, "x6": col, "x4": col},
-        "right": {...}
-      }
+    Le modèle contient 2 paires de blocs (haut = résumé, bas = zone d'entrée).
+    On retourne volontairement **la paire du BAS** pour la saisie.
     """
-    # 1) recense toutes les lignes où on voit au moins 3 libellés parmi France/NIKO/X6/X4
     labels = {"france", "niko", "x6", "x4"}
     row_hits: Dict[int, Dict[str, int]] = {}
+
     for r in ws.iter_rows(values_only=False):
         for c in r:
             v = c.value
@@ -169,30 +162,25 @@ def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
                 if nv in labels:
                     row_hits.setdefault(c.row, {})[nv] = c.column
 
-    # candidates = [(row, {label->col})] et on garde seulement les lignes crédibles
     candidates = [(row, cols) for row, cols in row_hits.items() if len(cols) >= 3]
     if len(candidates) < 2:
         raise KeyError("En-têtes 'France/NIKO/X6/X4' introuvables (paire du bas non détectée).")
 
-    # 2) On veut la paire **du bas** : on prend les 2 lignes avec les plus grands index.
-    candidates.sort(key=lambda x: x[0])           # tri par numéro de ligne
-    bottom_pair = candidates[-2:]                 # les 2 dernières lignes (bas de page)
+    # On prend les 2 lignes les plus basses (bas de page)
+    candidates.sort(key=lambda x: x[0])
+    bottom_pair = candidates[-2:]
 
-    # 3) Détermine gauche/droite en fonction de la moyenne des colonnes
     def _avg_col(cols: Dict[str, int]) -> float:
         return sum(cols.values()) / len(cols)
 
-    bottom_pair.sort(key=lambda x: _avg_col(x[1]))  # gauche puis droite
+    # gauche / droite
+    bottom_pair.sort(key=lambda x: _avg_col(x[1]))
     (left_row, left_cols), (right_row, right_cols) = bottom_pair
 
-    # 4) complète les colonnes manquantes si besoin (très tolérant)
     def _fill_missing(cols: Dict[str, int]) -> Dict[str, int]:
         out = cols.copy()
-        order = ["france", "niko", "x6", "x4"]
-        if order[0] in out:
-            first_c = out[order[0]]
-            for k in order:
-                out.setdefault(k, first_c)
+        for k in ["france", "niko", "x6", "x4"]:
+            out.setdefault(k, next(iter(out.values())))
         return out
 
     left_cols  = _fill_missing(left_cols)
@@ -202,6 +190,7 @@ def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
         "left":  {"header_row": left_row,  "bouteilles_row": left_row + 1, "cartons_row": left_row + 2, **left_cols},
         "right": {"header_row": right_row, "bouteilles_row": right_row + 1, "cartons_row": right_row + 2, **right_cols},
     }
+
 
     def _avg_col(cols: Dict[str,int]) -> float:
         return sum(cols.values()) / len(cols)
@@ -276,21 +265,35 @@ def fill_fiche_7000L_xlsx(
         "75x6":   {"b": _addr(R["x6"],     R["bouteilles_row"]), "c": _addr(R["x6"],     R["cartons_row"])},
         "75x4":   {"b": _addr(R["x4"],     R["bouteilles_row"]), "c": _addr(R["x4"],     R["cartons_row"])},
     }
+    # --- Agrégats : priorité totale à df_min (tableau affiché/sauvegardé).
+    # Fallback vers df_calc uniquement si df_min est vide.
+    use_dfmin = isinstance(df_min, pd.DataFrame) and not df_min.empty
 
-    # Agrégats : priorité à df_min
-    agg1 = _agg_from_dfmin(df_min, gout1) if df_min is not None else _agg_counts_by_format_and_brand(df_calc, gout1)
-    for k, dest in P1.items():
-        _set(ws, dest["b"], int(agg1[k]["bouteilles"]))
-        _set(ws, dest["c"], int(agg1[k]["cartons"]))
-
+    agg1 = _agg_from_dfmin(df_min, gout1) if use_dfmin else _agg_counts_by_format_and_brand(df_calc, gout1)
+    agg2 = None
     if gout2:
-        agg2 = _agg_from_dfmin(df_min, gout2) if df_min is not None else _agg_counts_by_format_and_brand(df_calc, gout2)
+        agg2 = _agg_from_dfmin(df_min, gout2) if use_dfmin else _agg_counts_by_format_and_brand(df_calc, gout2)
+
+    # Helper : n'écrit pas les 0 (on laisse les pointillés du modèle)
+    def _write_if_pos(addr: str, val: int):
+        try:
+            v = int(val)
+        except Exception:
+            return
+        if v > 0:
+            _set(ws, addr, v)
+
+    # Gauche (Produit 1)
+    for k, dest in P1.items():
+        _write_if_pos(dest["b"], agg1[k]["bouteilles"])
+        _write_if_pos(dest["c"], agg1[k]["cartons"])
+
+    # Droite (Produit 2) — si présent ; sinon ne rien toucher du tout
+    if gout2 and agg2 is not None:
         for k, dest in P2.items():
-            _set(ws, dest["b"], int(agg2[k]["bouteilles"]))
-            _set(ws, dest["c"], int(agg2[k]["cartons"]))
-    else:
-        for dest in P2.values():
-            _set(ws, dest["b"], 0); _set(ws, dest["c"], 0)
+            _write_if_pos(dest["b"], agg2[k]["bouteilles"])
+            _write_if_pos(dest["c"], agg2[k]["cartons"])
+
 
     bio = io.BytesIO()
     wb.save(bio)
