@@ -8,6 +8,28 @@ import pandas as pd
 import openpyxl
 from openpyxl.utils import coordinate_to_tuple, get_column_letter
 
+import re
+
+def _parse_format_from_stock(stock: str):
+    """
+    Extrait (nb_bouteilles_par_carton, volume_L) depuis la chaîne Stock visible
+    ex: 'Carton de 12 Bouteilles - 0.33L' -> (12, 0.33)
+        'Carton de 6 Bouteilles 75cl ...' -> (6, 0.75)
+        'Pack de 4 Bouteilles 75cl ...'   -> (4, 0.75)
+    Retourne (None, None) si introuvable.
+    """
+    s = str(stock or "")
+    # nb bouteilles
+    m_nb = re.search(r'(Carton|Pack)\s+de\s+(\d+)\s+Bouteilles?', s, flags=re.I)
+    nb = int(m_nb.group(2)) if m_nb else None
+    # volume
+    m_l = re.search(r'(\d+(?:[.,]\d+)?)\s*[lL]\b', s)
+    vol = float(m_l.group(1).replace(",", ".")) if m_l else None
+    if vol is None:
+        m_cl = re.search(r'(\d+(?:[.,]\d+)?)\s*c[lL]\b', s)
+        vol = float(m_cl.group(1).replace(",", "."))/100.0 if m_cl else None
+    return nb, vol
+
 VOL_TOL = 0.02
 
 def _is_close(a: float, b: float, tol: float = VOL_TOL) -> bool:
@@ -38,6 +60,55 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[st
     df = df[df["GoutCanon"].astype(str).str.strip() == str(gout).strip()]
     if df.empty:
         return out
+def _agg_from_dfmin(df_min, gout: str):
+    """
+    Lit *exactement* les nombres visibles dans le tableau sauvegardé (df_min):
+      colonnes attendues : Produit, Stock, GoutCanon,
+        Cartons à produire (arrondi), Bouteilles à produire (arrondi)
+    Reconnaît 33cl x12, 75cl x6, 75cl x4 via la colonne Stock
+    Ventile 33cl : NIKO si 'NIKO' dans Produit, sinon FRANCE.
+    """
+    out = {
+        "33_fr":  {"cartons": 0, "bouteilles": 0},
+        "33_niko":{"cartons": 0, "bouteilles": 0},
+        "75x6":   {"cartons": 0, "bouteilles": 0},
+        "75x4":   {"cartons": 0, "bouteilles": 0},
+    }
+    import pandas as pd
+    if df_min is None or not isinstance(df_min, pd.DataFrame) or df_min.empty:
+        return out
+    req = {"Produit","Stock","GoutCanon","Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"}
+    if any(c not in df_min.columns for c in req):
+        return out
+
+    df = df_min.copy()
+    df = df[df["GoutCanon"].astype(str).str.strip() == str(gout).strip()]
+    if df.empty: 
+        return out
+
+    for _, r in df.iterrows():
+        nb, vol = _parse_format_from_stock(r["Stock"])
+        if nb is None or vol is None:
+            continue
+        ct = int(pd.to_numeric(r["Cartons à produire (arrondi)"], errors="coerce") or 0)
+        bt = int(pd.to_numeric(r["Bouteilles à produire (arrondi)"], errors="coerce") or 0)
+        prod_up = str(r["Produit"]).upper()
+
+        if nb == 12 and abs(vol-0.33) <= 0.02:
+            key = "33_niko" if "NIKO" in prod_up else "33_fr"
+        elif nb == 6 and abs(vol-0.75) <= 0.02:
+            key = "75x6"
+        elif nb == 4 and abs(vol-0.75) <= 0.02:
+            key = "75x4"
+        else:
+            continue
+
+        out[key]["cartons"]    += ct
+        out[key]["bouteilles"] += bt
+
+    return out
+
+
 
     def _add(where: str, ct, bt):
         out[where]["cartons"]    += int(pd.to_numeric(ct, errors="coerce").fillna(0).sum())
@@ -152,26 +223,28 @@ def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
 def _addr(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
 
-# ---------- Filler principal ----------
 def fill_fiche_7000L_xlsx(
     template_path: str,
     semaine_du: date,
     ddm: date,
     gout1: str,
     gout2: Optional[str],
-    df_calc: pd.DataFrame,
+    df_calc,                      # inchangé
     sheet_name: str | None = None,
+    df_min=None,                  # ✅ NOUVEAU (optionnel)
 ) -> bytes:
     """
-    Remplit la fiche de production (2 blocs) de façon robuste :
-      - Produit 1 -> bloc gauche ; Produit 2 -> bloc droite (si présent)
+    Remplit la fiche de production :
+      - Produit 1 = bloc gauche ; Produit 2 = bloc droite (si présent)
       - DDM (JJ/MM/AAAA) + LOT = DDM sans '/'
       - Date fermentation = DDM - 1 an
-      - Cellules quantité détectées automatiquement (pas d’adresses en dur)
+      - Quantités détectées automatiquement (on ne dépend pas d'adresses en dur)
+      - Si df_min est fourni, on lit STRICTEMENT les nombres affichés dans le tableau sauvegardé
+        (sinon fallback sur df_calc).
     """
     wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
 
-    # Choix de l’onglet
+    # Choix de l’onglet (garde la logique souple que tu avais)
     targets = [sheet_name] if sheet_name else ["Fiche de production 7000 L", "Fiche de production 7000L"]
     ws = None
     for nm in targets:
@@ -181,7 +254,7 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         raise KeyError(f"Feuille cible introuvable. Feuilles présentes : {wb.sheetnames}")
 
-    # En-tête : Produits / DDM / LOT / Fermentation
+    # En-tête
     _set(ws, "D8", gout1 or "")
     _set(ws, "T8", gout2 or "")
 
@@ -191,20 +264,17 @@ def fill_fiche_7000L_xlsx(
     ferment_date = ddm - relativedelta(years=1)
     _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
 
-    # Repérage dynamique des tableaux quantités
+    # Repère dynamiquement les blocs "France / NIKO / X6 / X4"
     blocks = _locate_quantity_blocks(ws)
-    L = blocks["left"]
-    R = blocks["right"]
+    L = blocks["left"];  R = blocks["right"]
 
-    # Adresses calculées à partir des en-têtes détectés
-    # Gauche (Produit 1) :
+    # Construit les adresses bouteilles/cartons à partir des en-têtes détectés
     P1 = {
         "33_fr":  {"b": _addr(L["france"], L["bouteilles_row"]), "c": _addr(L["france"], L["cartons_row"])},
         "33_niko":{"b": _addr(L["niko"],   L["bouteilles_row"]), "c": _addr(L["niko"],   L["cartons_row"])},
         "75x6":   {"b": _addr(L["x6"],     L["bouteilles_row"]), "c": _addr(L["x6"],     L["cartons_row"])},
         "75x4":   {"b": _addr(L["x4"],     L["bouteilles_row"]), "c": _addr(L["x4"],     L["cartons_row"])},
     }
-    # Droite (Produit 2) :
     P2 = {
         "33_fr":  {"b": _addr(R["france"], R["bouteilles_row"]), "c": _addr(R["france"], R["cartons_row"])},
         "33_niko":{"b": _addr(R["niko"],   R["bouteilles_row"]), "c": _addr(R["niko"],   R["cartons_row"])},
@@ -212,14 +282,14 @@ def fill_fiche_7000L_xlsx(
         "75x4":   {"b": _addr(R["x4"],     R["bouteilles_row"]), "c": _addr(R["x4"],     R["cartons_row"])},
     }
 
-    # Injection des données depuis df_calc (sauvegardé)
-    agg1 = _agg_counts_by_format_and_brand(df_calc, gout1)
+    # 👉 AGRÉGATS : on privilégie df_min (tableau affiché et sauvegardé)
+    agg1 = _agg_from_dfmin(df_min, gout1) if df_min is not None else _agg_counts_by_format_and_brand(df_calc, gout1)
     for k, dest in P1.items():
         _set(ws, dest["b"], int(agg1[k]["bouteilles"]))
         _set(ws, dest["c"], int(agg1[k]["cartons"]))
 
     if gout2:
-        agg2 = _agg_counts_by_format_and_brand(df_calc, gout2)
+        agg2 = _agg_from_dfmin(df_min, gout2) if df_min is not None else _agg_counts_by_format_and_brand(df_calc, gout2)
         for k, dest in P2.items():
             _set(ws, dest["b"], int(agg2[k]["bouteilles"]))
             _set(ws, dest["c"], int(agg2[k]["cartons"]))
@@ -230,3 +300,4 @@ def fill_fiche_7000L_xlsx(
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
+
