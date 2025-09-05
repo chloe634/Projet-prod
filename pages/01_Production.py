@@ -6,6 +6,10 @@ from core.optimizer import (
     apply_canonical_flavor, sanitize_gouts,
     compute_plan
 )
+import datetime as _dt
+from dateutil.relativedelta import relativedelta
+from common.xlsx_fill import fill_fiche_7000L_xlsx
+
 
 apply_theme("Production — Ferment Station", "📦")
 section("Tableau de production", "📦")
