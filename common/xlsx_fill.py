@@ -186,7 +186,6 @@ def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
         "right": {"header_row": right_row, "bouteilles_row": right_row+1, "cartons_row": right_row+2, **right_cols},
     }
 
-from openpyxl.utils import get_column_letter
 def _addr(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
 
@@ -197,9 +196,9 @@ def fill_fiche_7000L_xlsx(
     ddm: date,
     gout1: str,
     gout2: Optional[str],
-    df_calc,                      # inchangé
+    df_calc,
     sheet_name: str | None = None,
-    df_min=None,                  # optionnel : tableau affiché
+    df_min=None,
 ) -> bytes:
     wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
 
