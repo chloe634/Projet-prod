@@ -162,7 +162,7 @@ if sp:
     g1 = gout_list[0] if len(gout_list) >= 1 else ""
     g2 = gout_list[1] if len(gout_list) >= 2 else None
 
-    TEMPLATE_PATH = "assets/Fiche de Prod 5K - 250829.xlsx"  # place ton modèle ici
+    TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"  # place ton modèle ici
 
     try:
         xlsx_bytes = fill_fiche_7000L_xlsx(
@@ -186,7 +186,7 @@ if sp:
         )
         st.info("Pour un PDF identique, ouvre l'XLSX dans Excel et fais Fichier → Exporter en PDF.")
     except FileNotFoundError:
-        st.error("Modèle introuvable. Place le fichier **assets/Fiche de Prod 5K - 250829.xlsx** dans le repo.")
+        st.error("Modèle introuvable. Place le fichier **assets/Fiche de Prod 250620.xlsx** dans le repo.")
     except Exception as e:
         st.error(f"Erreur lors du remplissage du modèle : {e}")
 
