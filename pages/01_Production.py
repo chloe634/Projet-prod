@@ -167,15 +167,16 @@ if sp:
     TEMPLATE_PATH = TEMPLATE_PATH if 'TEMPLATE_PATH' in locals() else "assets/Fiche de Prod 250620.xlsx"
 
     try:
-        xlsx_bytes = fill_fiche_7000L_xlsx(
-            template_path=TEMPLATE_PATH,
-            semaine_du=_dt.date.fromisoformat(sp["semaine_du"]),
-            ddm=_dt.date.fromisoformat(sp["ddm"]),
-            gout1=g1 or "",
-            gout2=g2,   # peut être None → la page droite sera remplie à 0
-            df_calc=sp.get("df_calc", df_calc),
-            # sheet_name=SHEET_NAME  # décommente si tu utilises l'option config
-        )
+xlsx_bytes = fill_fiche_7000L_xlsx(
+    template_path=TEMPLATE_PATH,
+    semaine_du=_dt.date.fromisoformat(sp["semaine_du"]),
+    ddm=_dt.date.fromisoformat(sp["ddm"]),
+    gout1=g1 or "",
+    gout2=g2,   # peut être None → la page droite sera remplie à 0
+    df_calc=sp.get("df_calc", df_calc),
+    # sheet_name=SHEET_NAME,  # décommente si tu utilises l’option config
+    df_min=sp.get("df_min", df_min),   # 👈 AJOUT IMPORTANT
+)
 
         semaine_label = _dt.date.fromisoformat(sp["semaine_du"]).strftime("%d-%m-%Y")
         fname_xlsx = f"Fiche de production (semaine du {semaine_label}).xlsx"
