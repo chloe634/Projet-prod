@@ -2,32 +2,11 @@
 from __future__ import annotations
 import io
 from datetime import date
-from typing import Optional, Tuple, Dict
+from typing import Optional, Dict
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import openpyxl
-
-from openpyxl.utils import get_column_letter
-
-def _set(ws, addr: str, value, number_format: str | None = None):
-    """
-    Ecrit `value` dans `addr`. Si `addr` appartient à une zone fusionnée,
-    écrit dans la cellule *top-left* de cette zone (sinon openpyxl lève MergedCell read-only).
-    Retourne la coordonnée effectivement utilisée.
-    """
-    for rng in ws.merged_cells.ranges:
-        if addr in rng:  # addr est contenu dans la zone fusionnée
-            tl = f"{get_column_letter(rng.min_col)}{rng.min_row}"
-            cell = ws[tl]
-            cell.value = value
-            if number_format:
-                cell.number_format = number_format
-            return tl
-    cell = ws[addr]
-    cell.value = value
-    if number_format:
-        cell.number_format = number_format
-    return addr
+from openpyxl.utils import coordinate_to_tuple
 
 VOL_TOL = 0.02
 
@@ -44,7 +23,6 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[st
       - 33cl x12 NIKO   -> key "33_niko"
       - 75cl x6         -> key "75x6"
       - 75cl x4         -> key "75x4"
-
     Règle 33cl : si libellé produit contient 'NIKO' => NIKO, sinon FRANCE.
                  Tout libellé contenant 'Kéfir/Kefir' est rangé FRANCE par défaut.
     """
@@ -106,6 +84,22 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[st
 
     return out
 
+def _set(ws, addr: str, value, number_format: str | None = None):
+    """
+    Ecrit `value` dans `addr`. Si `addr` appartient à une zone fusionnée,
+    redirige vers la cellule *top-left* (rng.min_row, rng.min_col).
+    """
+    row, col = coordinate_to_tuple(addr)
+    # Si addr est dans une fusion, vise le top-left
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+            row, col = rng.min_row, rng.min_col
+            break
+    cell = ws.cell(row=row, column=col)
+    cell.value = value
+    if number_format:
+        cell.number_format = number_format
+
 def fill_fiche_7000L_xlsx(
     template_path: str,
     semaine_du: date,      # utilisé pour le nom de fichier côté appelant
@@ -147,7 +141,6 @@ def fill_fiche_7000L_xlsx(
     ferment_date = ddm - relativedelta(years=1)
     _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
 
-
     # Cell mapping : adapte si ta maquette a d'autres lignes
     CELLS_P1 = {  # Produit 1
         "33_fr":  {"cartons": "D15", "bouteilles": "D16"},
@@ -178,7 +171,6 @@ def fill_fiche_7000L_xlsx(
         for key, dest in CELLS_P2.items():
             _set(ws, dest["cartons"], 0)
             _set(ws, dest["bouteilles"], 0)
-
 
     bio = io.BytesIO()
     wb.save(bio)
