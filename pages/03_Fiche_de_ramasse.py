@@ -14,6 +14,8 @@ from common.data import get_paths
 # -> Mets ici le chemin du fichier que tu as joint dans le repo :
 REF_EXCEL_PATH = "assets/LOG_EN_001_01 BL enlèvements Sofripa-2.xlsx"  # adapte si besoin
 
+
+
 # Valeurs de secours si le fichier de référence est introuvable
 FALLBACK_BY_FORMAT = {
     "12x33": {"cartons_par_palette": 108, "poids_palette_kg": 820},
