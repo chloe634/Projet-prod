@@ -265,34 +265,27 @@ def fill_fiche_7000L_xlsx(
         "75x6":   {"b": _addr(R["x6"],     R["bouteilles_row"]), "c": _addr(R["x6"],     R["cartons_row"])},
         "75x4":   {"b": _addr(R["x4"],     R["bouteilles_row"]), "c": _addr(R["x4"],     R["cartons_row"])},
     }
-    # --- Agrégats : priorité totale à df_min (tableau affiché/sauvegardé).
-    # Fallback vers df_calc uniquement si df_min est vide.
-    use_dfmin = isinstance(df_min, pd.DataFrame) and not df_min.empty
+   # --- Agrégats : df_min uniquement (copie EXACTE du tableau affiché)
+agg1 = _agg_from_dfmin(df_min, gout1)
+agg2 = _agg_from_dfmin(df_min, gout2) if gout2 else None
 
-    agg1 = _agg_from_dfmin(df_min, gout1) if use_dfmin else _agg_counts_by_format_and_brand(df_calc, gout1)
-    agg2 = None
-    if gout2:
-        agg2 = _agg_from_dfmin(df_min, gout2) if use_dfmin else _agg_counts_by_format_and_brand(df_calc, gout2)
+# N'écrit rien si 0 → on laisse les pointillés du modèle
+def _write_if_pos(addr: str, val):
+    v = int(pd.to_numeric(val, errors="coerce") or 0)
+    if v > 0:
+        _set(ws, addr, v)
 
-    # Helper : n'écrit pas les 0 (on laisse les pointillés du modèle)
-    def _write_if_pos(addr: str, val: int):
-        try:
-            v = int(val)
-        except Exception:
-            return
-        if v > 0:
-            _set(ws, addr, v)
+# Gauche (Produit 1)
+for k, dest in P1.items():
+    _write_if_pos(dest["b"], agg1[k]["bouteilles"])
+    _write_if_pos(dest["c"], agg1[k]["cartons"])
 
-    # Gauche (Produit 1)
-    for k, dest in P1.items():
-        _write_if_pos(dest["b"], agg1[k]["bouteilles"])
-        _write_if_pos(dest["c"], agg1[k]["cartons"])
+# Droite (Produit 2) si présent (sinon on ne touche pas aux pointillés)
+if agg2 is not None:
+    for k, dest in P2.items():
+        _write_if_pos(dest["b"], agg2[k]["bouteilles"])
+        _write_if_pos(dest["c"], agg2[k]["cartons"])
 
-    # Droite (Produit 2) — si présent ; sinon ne rien toucher du tout
-    if gout2 and agg2 is not None:
-        for k, dest in P2.items():
-            _write_if_pos(dest["b"], agg2[k]["bouteilles"])
-            _write_if_pos(dest["c"], agg2[k]["cartons"])
 
 
     bio = io.BytesIO()
