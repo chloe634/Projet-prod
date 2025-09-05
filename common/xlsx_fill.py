@@ -7,6 +7,28 @@ from dateutil.relativedelta import relativedelta
 import pandas as pd
 import openpyxl
 
+from openpyxl.utils import get_column_letter
+
+def _set(ws, addr: str, value, number_format: str | None = None):
+    """
+    Ecrit `value` dans `addr`. Si `addr` appartient à une zone fusionnée,
+    écrit dans la cellule *top-left* de cette zone (sinon openpyxl lève MergedCell read-only).
+    Retourne la coordonnée effectivement utilisée.
+    """
+    for rng in ws.merged_cells.ranges:
+        if addr in rng:  # addr est contenu dans la zone fusionnée
+            tl = f"{get_column_letter(rng.min_col)}{rng.min_row}"
+            cell = ws[tl]
+            cell.value = value
+            if number_format:
+                cell.number_format = number_format
+            return tl
+    cell = ws[addr]
+    cell.value = value
+    if number_format:
+        cell.number_format = number_format
+    return addr
+
 VOL_TOL = 0.02
 
 def _is_close(a: float, b: float, tol: float = VOL_TOL) -> bool:
@@ -114,18 +136,17 @@ def fill_fiche_7000L_xlsx(
         raise KeyError(f"Feuille cible introuvable. Feuilles présentes : {wb.sheetnames}")
 
     # Produits
-    ws["D8"].value = gout1 or ""
-    ws["T8"].value = gout2 or ""
+    _set(ws, "D8", gout1 or "")
+    _set(ws, "T8", gout2 or "")
 
     # DDM & LOT
-    ws["D10"].value = ddm
-    ws["D10"].number_format = "DD/MM/YYYY"
-    ws["O10"].value = ddm.strftime("%d%m%Y")
+    _set(ws, "D10", ddm, number_format="DD/MM/YYYY")
+    _set(ws, "O10", ddm.strftime("%d%m%Y"))
 
     # Fermentation > Date (DDM - 1 an)
     ferment_date = ddm - relativedelta(years=1)
-    ws["A20"].value = ferment_date
-    ws["A20"].number_format = "DD/MM/YYYY"
+    _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
+
 
     # Cell mapping : adapte si ta maquette a d'autres lignes
     CELLS_P1 = {  # Produit 1
@@ -144,19 +165,20 @@ def fill_fiche_7000L_xlsx(
     # Produit 1
     agg1 = _agg_counts_by_format_and_brand(df_calc, gout1)
     for key, dest in CELLS_P1.items():
-        ws[dest["cartons"]].value    = int(agg1[key]["cartons"])
-        ws[dest["bouteilles"]].value = int(agg1[key]["bouteilles"])
+        _set(ws, dest["cartons"],    int(agg1[key]["cartons"]))
+        _set(ws, dest["bouteilles"], int(agg1[key]["bouteilles"]))
 
     # Produit 2 (ou zéros)
     if gout2:
         agg2 = _agg_counts_by_format_and_brand(df_calc, gout2)
         for key, dest in CELLS_P2.items():
-            ws[dest["cartons"]].value    = int(agg2[key]["cartons"])
-            ws[dest["bouteilles"]].value = int(agg2[key]["bouteilles"])
+            _set(ws, dest["cartons"],    int(agg2[key]["cartons"]))
+            _set(ws, dest["bouteilles"], int(agg2[key]["bouteilles"]))
     else:
         for key, dest in CELLS_P2.items():
-            ws[dest["cartons"]].value = 0
-            ws[dest["bouteilles"]].value = 0
+            _set(ws, dest["cartons"], 0)
+            _set(ws, dest["bouteilles"], 0)
+
 
     bio = io.BytesIO()
     wb.save(bio)
