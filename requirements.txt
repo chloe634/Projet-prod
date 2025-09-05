@@ -5,3 +5,7 @@ openpyxl
 pillow
 pyyaml
 xlrd
+reportlab
+python-dateutil
+
+
