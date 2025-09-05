@@ -45,51 +45,55 @@ def slugify(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     return s
 
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
 def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
     """
-    Ordre de recherche:
-      0) assets/image_map.csv si présent (canonical -> filename), insensible aux accents/espaces/casse
-      1) Fichier nommé par SKU (CITR-33.webp) puis racine (CITR.webp)
-      2) Fichier nommé par slug du goût (mangue-passion.webp)
+    Ordre:
+      0) assets/image_map.csv (canonical -> filename). Si filename sans extension, on essaie .jpg/.jpeg/.png/.webp/.gif
+      1) Par SKU (CITR-33.ext puis CITR.ext)
+      2) Par slug du goût (ex: mangue-passion.ext)
     """
-
     import os, csv, unicodedata, re as _re
 
     def _norm_key(s: str) -> str:
-        # supprime accents, met en minuscules, condense espaces
         s = str(s or "")
         s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
         s = _re.sub(r"\s+", " ", s).strip().lower()
         return s
 
-    # 0) mapping optionnel assets/image_map.csv
+    # 0) mapping CSV
     map_csv = os.path.join(images_dir, "image_map.csv")
     if os.path.exists(map_csv) and flavor:
-        # on tente séparateur virgule puis point-virgule
-        loaded = False
         for sep in (",", ";"):
             try:
                 d = {}
                 with open(map_csv, "r", encoding="utf-8") as f:
                     rdr = csv.DictReader(f, delimiter=sep)
-                    if "canonical" in (c.lower() for c in rdr.fieldnames or []) and "filename" in (c.lower() for c in rdr.fieldnames or []):
+                    if not rdr.fieldnames:
+                        continue
+                    cols = {c.lower(): c for c in rdr.fieldnames}
+                    if "canonical" in cols and "filename" in cols:
                         for row in rdr:
-                            cano = (row.get("canonical") or row.get("Canonical") or "").strip()
-                            fn   = (row.get("filename")  or row.get("Filename")  or "").strip()
+                            cano = (row.get(cols["canonical"]) or "").strip()
+                            fn   = (row.get(cols["filename"])  or "").strip()
                             if cano and fn:
                                 d[_norm_key(cano)] = fn
-                        loaded = True
                         break
             except Exception:
                 pass
-        if loaded:
-            fn = d.get(_norm_key(flavor))
-            if fn:
-                p = os.path.join(images_dir, fn)
-                if os.path.exists(p):
-                    return p  # mapping trouvé
+        fn = d.get(_norm_key(flavor)) if 'd' in locals() else None
+        if fn:
+            p = os.path.join(images_dir, fn)
+            if os.path.splitext(fn)[1] == "":  # pas d'extension
+                for ext in IMG_EXTS:
+                    p_try = p + ext
+                    if os.path.exists(p_try):
+                        return p_try
+            if os.path.exists(p):
+                return p
 
-    # 1) priorité SKU exact (ex: CITR-33.webp), puis racine SKU (CITR.webp)
+    # 1) SKU
     if sku:
         for ext in IMG_EXTS:
             p = os.path.join(images_dir, f"{sku}{ext}")
@@ -101,8 +105,9 @@ def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
             if os.path.exists(p):
                 return p
 
-    # 2) slug du goût canonique (mangue-passion.webp)
+    # 2) slug du goût
     if flavor:
+        from .design import slugify  # si slugify est dans ce fichier, sinon adapte
         s = slugify(flavor)
         for ext in IMG_EXTS:
             p = os.path.join(images_dir, f"{s}{ext}")
@@ -116,37 +121,33 @@ import os, base64
 from io import BytesIO
 from PIL import Image
 
+import os, base64
+from io import BytesIO
+from PIL import Image
+
 def load_image_bytes(path: str):
     """
-    Retourne une valeur affichable par ImageColumn :
-    - Si possible : bytes PNG (compat universelle).
-    - Sinon (ex. WEBP sans plugin Pillow) : data-URL 'data:image/...;base64,...'
-    - Sinon : None.
+    Retourne :
+    - bytes PNG (préféré)
+    - ou data-URL base64 (fallback)
     """
     if not path or not os.path.exists(path):
         return None
     ext = os.path.splitext(path)[1].lower()
-    # 1) tentative conversion PNG via Pillow
     try:
-        im = Image.open(path)
-        im = im.convert("RGBA")
+        im = Image.open(path).convert("RGBA")
         buf = BytesIO()
         im.save(buf, format="PNG")
-        return buf.getvalue()            # ✅ ImageColumn sait afficher des bytes PNG
+        return buf.getvalue()
     except Exception:
-        # 2) fallback : on renvoie une data-URL que le navigateur sait décoder
         try:
             with open(path, "rb") as f:
                 raw = f.read()
-            # mime basique selon l’extension
             mime = {
-                ".webp": "image/webp",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".gif": "image/gif",
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
             }.get(ext, "image/octet-stream")
             b64 = base64.b64encode(raw).decode("ascii")
-            return f"data:{mime};base64,{b64}"   # ✅ URL affichable sans Pillow
+            return f"data:{mime};base64,{b64}"
         except Exception:
             return None
