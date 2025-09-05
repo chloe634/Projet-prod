@@ -222,6 +222,11 @@ for _, r in df_min_saved.iterrows():
                 "format": fmt,
             })
             seen.add(key)
+_dbg = df_min_saved.copy()
+_dbg["_fmt_detecte"] = _dbg.get("Stock", pd.Series()).apply(_format_from_stock)
+st.caption("Debug format détecté (top 10) :")
+st.dataframe(_dbg[["GoutCanon","Stock","_fmt_detecte"]].head(10), use_container_width=True, hide_index=True)
+
 
 if not opts_rows:
     st.error(
