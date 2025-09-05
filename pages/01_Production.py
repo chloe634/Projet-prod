@@ -16,8 +16,8 @@ from core.optimizer import (
 from common.xlsx_fill import fill_fiche_7000L_xlsx
 
 # ====== Réglages modèle Excel ======
-TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"   # <- mets ici le nom de ton modèle
-SHEET_NAME = None   # ou "Fiche de production 7000L" si tu veux forcer un onglet précis
+TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"
+SHEET_NAME = None
 
 # ---------------- UI header ----------------
 apply_theme("Production — Ferment Station", "📦")
@@ -110,7 +110,6 @@ st.data_editor(
 # ======================================================================
 section("Fiche de production (modèle Excel)", "🧾")
 
-# Valeurs par défaut (si déjà sauvegardé)
 _sp_prev = st.session_state.get("saved_production")
 default_semaine = _dt.date.fromisoformat(_sp_prev["semaine_du"]) if _sp_prev and "semaine_du" in _sp_prev else _dt.date.today()
 default_ddm     = _dt.date.fromisoformat(_sp_prev["ddm"])       if _sp_prev and "ddm" in _sp_prev       else _dt.date.today()
@@ -121,9 +120,7 @@ with colA:
 with colB:
     date_ddm = st.date_input("DDM (date limite)", value=default_ddm)
 
-# Bouton de sauvegarde (fige les données utilisées pour la fiche)
 if st.button("💾 Sauvegarder cette production", use_container_width=True):
-    # ordre des goûts = ordre d'apparition dans le tableau affiché
     g_order = []
     if isinstance(df_min, pd.DataFrame) and "GoutCanon" in df_min.columns:
         for g in df_min["GoutCanon"].astype(str).tolist():
@@ -139,11 +136,9 @@ if st.button("💾 Sauvegarder cette production", use_container_width=True):
     }
     st.success("Production sauvegardée ✅ — tu peux maintenant générer la fiche.")
 
-# Si on a une sauvegarde, proposer la génération du XLSX
 sp = st.session_state.get("saved_production")
 
 def _two_gouts_auto(sp_obj, df_min_cur, gouts_cur):
-    """Retourne [g1, g2] (2 goûts max) en suivant l'ordre du tableau sauvegardé."""
     if isinstance(sp_obj, dict):
         g_saved = sp_obj.get("gouts")
         if g_saved:
@@ -166,13 +161,6 @@ def _two_gouts_auto(sp_obj, df_min_cur, gouts_cur):
 if sp:
     g1, g2 = _two_gouts_auto(sp, sp.get("df_min", df_min), gouts_cibles)
 
-    if not st.file_uploader:  # rien à faire, juste éviter les warnings mypy
-        pass
-
-    if not st.session_state.get("model_path_checked") and not st.session_state.get("model_path_warning"):
-        st.session_state.model_path_checked = True
-
-    # Vérifier la présence du modèle
     if not os.path.exists(TEMPLATE_PATH):
         st.error(f"Modèle introuvable. Place le fichier **{TEMPLATE_PATH}** dans le repo.")
     else:
@@ -182,10 +170,10 @@ if sp:
                 semaine_du=_dt.date.fromisoformat(sp["semaine_du"]),
                 ddm=_dt.date.fromisoformat(sp["ddm"]),
                 gout1=g1 or "",
-                gout2=g2,  # peut être None → la page droite sera remplie à 0
+                gout2=g2,
                 df_calc=sp.get("df_calc", df_calc),
                 sheet_name=SHEET_NAME,
-                df_min=sp.get("df_min", df_min),   # <- tableau affiché
+                df_min=sp.get("df_min", df_min),
             )
 
             semaine_label = _dt.date.fromisoformat(sp["semaine_du"]).strftime("%d-%m-%Y")
