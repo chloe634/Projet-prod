@@ -1,4 +1,5 @@
 # pages/01_Production.py
+import os
 import re
 import datetime as _dt
 import pandas as pd
@@ -15,7 +16,7 @@ from core.optimizer import (
 from common.xlsx_fill import fill_fiche_7000L_xlsx
 
 # ====== Réglages modèle Excel ======
-TEMPLATE_PATH = "assets/Fiche de Prod 5K - 250829.xlsx"   # <- mets ici le nom de ton modèle
+TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"   # <- mets ici le nom de ton modèle
 SHEET_NAME = None   # ou "Fiche de production 7000L" si tu veux forcer un onglet précis
 
 # ---------------- UI header ----------------
