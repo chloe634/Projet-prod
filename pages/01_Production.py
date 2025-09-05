@@ -164,7 +164,7 @@ if sp:
     g1, g2 = _two_gouts_auto(sp, sp.get("df_min", df_min), gouts_cibles)
 
     # Chemin du modèle (ta logique actuelle — adapte si tu es passé par config.yaml)
-    TEMPLATE_PATH = TEMPLATE_PATH if 'TEMPLATE_PATH' in locals() else "assets/Fiche de Prod 5K - 250829.xlsx"
+    TEMPLATE_PATH = TEMPLATE_PATH if 'TEMPLATE_PATH' in locals() else "assets/Fiche de Prod 250620.xlsx"
 
     try:
         xlsx_bytes = fill_fiche_7000L_xlsx(
