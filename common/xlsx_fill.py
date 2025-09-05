@@ -28,68 +28,8 @@ def _parse_format_from_stock(stock: str):
         vol = float(m_cl.group(1).replace(",", "."))/100.0 if m_cl else None
     return nb, vol
 
-# ----------- Agrégat depuis df_calc (fallback) -----------
-def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[str, Dict[str, int]]:
-    out = {
-        "33_fr":  {"cartons": 0, "bouteilles": 0},
-        "33_niko":{"cartons": 0, "bouteilles": 0},
-        "75x6":   {"cartons": 0, "bouteilles": 0},
-        "75x4":   {"cartons": 0, "bouteilles": 0},
-    }
-    if df_calc is None or not isinstance(df_calc, pd.DataFrame) or df_calc.empty:
-        return out
-
-    req = {
-        "GoutCanon","Produit","Bouteilles/carton","Volume bouteille (L)",
-        "Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"
-    }
-    if any(c not in df_calc.columns for c in req):
-        return out
-
-    df = df_calc.copy()
-    df = df[df["GoutCanon"].astype(str).str.strip() == str(gout).strip()]
-    if df.empty:
-        return out
-
-    def _add(where: str, ct, bt):
-        out[where]["cartons"]    += int(pd.to_numeric(ct, errors="coerce").fillna(0).sum())
-        out[where]["bouteilles"] += int(pd.to_numeric(bt, errors="coerce").fillna(0).sum())
-
-    # 33 cL x12 -> France/NIKO selon libellé
-    m33 = (df["Bouteilles/carton"] == 12) & (_is_close(df["Volume bouteille (L)"], 0.33))
-    if m33.any():
-        part = df.loc[m33, ["Produit","Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"]].copy()
-        up = part["Produit"].astype(str).str.upper()
-        is_niko  = up.str.contains("NIKO", na=False)
-        is_kefir = up.str.contains("KÉFIR|KEFIR", na=False)
-
-        _add("33_niko",
-             part.loc[is_niko, "Cartons à produire (arrondi)"],
-             part.loc[is_niko, "Bouteilles à produire (arrondi)"])
-
-        fr_mask = (~is_niko) | is_kefir
-        _add("33_fr",
-             part.loc[fr_mask, "Cartons à produire (arrondi)"],
-             part.loc[fr_mask, "Bouteilles à produire (arrondi)"])
-
-    # 75 cL x6
-    m75x6 = (df["Bouteilles/carton"] == 6) & (_is_close(df["Volume bouteille (L)"], 0.75))
-    if m75x6.any():
-        _add("75x6",
-             df.loc[m75x6, "Cartons à produire (arrondi)"],
-             df.loc[m75x6, "Bouteilles à produire (arrondi)"])
-
-    # 75 cL x4
-    m75x4 = (df["Bouteilles/carton"] == 4) & (_is_close(df["Volume bouteille (L)"], 0.75))
-    if m75x4.any():
-        _add("75x4",
-             df.loc[m75x4, "Cartons à produire (arrondi)"],
-             df.loc[m75x4, "Bouteilles à produire (arrondi)"])
-
-    return out
-
 # ----------- Agrégat STRICT depuis df_min (tableau affiché) -----------
-def _agg_from_dfmin(df_min, gout: str) -> Dict[str, Dict[str, int]]:
+def _agg_from_dfmin(df_min: pd.DataFrame, gout: str) -> Dict[str, Dict[str, int]]:
     out = {
         "33_fr":  {"cartons": 0, "bouteilles": 0},
         "33_niko":{"cartons": 0, "bouteilles": 0},
@@ -142,14 +82,14 @@ def _set(ws, addr: str, value, number_format: str | None = None):
         cell.number_format = number_format
     return f"{get_column_letter(col)}{row}"
 
-# ----------- Détection auto des blocs Quantité -----------
+# ----------- Détection auto des blocs Quantité (paire du BAS) -----------
 def _norm(s) -> str:
     return str(s).strip().lower()
 
 def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
     """
     Le modèle contient 2 paires de blocs (haut = résumé, bas = zone d'entrée).
-    On retourne volontairement **la paire du BAS** pour la saisie.
+    On retourne **la paire du BAS** pour la saisie.
     """
     labels = {"france", "niko", "x6", "x4"}
     row_hits: Dict[int, Dict[str, int]] = {}
@@ -158,7 +98,7 @@ def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
         for c in r:
             v = c.value
             if isinstance(v, str):
-                nv = str(v).strip().lower()
+                nv = _norm(v)
                 if nv in labels:
                     row_hits.setdefault(c.row, {})[nv] = c.column
 
@@ -189,31 +129,6 @@ def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
     return {
         "left":  {"header_row": left_row,  "bouteilles_row": left_row + 1, "cartons_row": left_row + 2, **left_cols},
         "right": {"header_row": right_row, "bouteilles_row": right_row + 1, "cartons_row": right_row + 2, **right_cols},
-    }
-
-
-    def _avg_col(cols: Dict[str,int]) -> float:
-        return sum(cols.values()) / len(cols)
-
-    candidates.sort(key=lambda x: _avg_col(x[1]))
-    left_row, left_cols   = candidates[0]
-    right_row, right_cols = candidates[-1]
-
-    def _fill_missing(cols: Dict[str,int]) -> Dict[str,int]:
-        out = cols.copy()
-        keys = ["france","niko","x6","x4"]
-        if keys[0] in out:
-            first_c = out[keys[0]]
-            for k in keys:
-                out.setdefault(k, first_c)
-        return out
-
-    left_cols  = _fill_missing(left_cols)
-    right_cols = _fill_missing(right_cols)
-
-    return {
-        "left":  {"header_row": left_row,  "bouteilles_row": left_row+1,  "cartons_row": left_row+2,  **left_cols},
-        "right": {"header_row": right_row, "bouteilles_row": right_row+1, "cartons_row": right_row+2, **right_cols},
     }
 
 def _addr(col: int, row: int) -> str:
@@ -265,28 +180,27 @@ def fill_fiche_7000L_xlsx(
         "75x6":   {"b": _addr(R["x6"],     R["bouteilles_row"]), "c": _addr(R["x6"],     R["cartons_row"])},
         "75x4":   {"b": _addr(R["x4"],     R["bouteilles_row"]), "c": _addr(R["x4"],     R["cartons_row"])},
     }
-   # --- Agrégats : df_min uniquement (copie EXACTE du tableau affiché)
-agg1 = _agg_from_dfmin(df_min, gout1)
-agg2 = _agg_from_dfmin(df_min, gout2) if gout2 else None
 
-# N'écrit rien si 0 → on laisse les pointillés du modèle
-def _write_if_pos(addr: str, val):
-    v = int(pd.to_numeric(val, errors="coerce") or 0)
-    if v > 0:
-        _set(ws, addr, v)
+    # --- Agrégats : df_min uniquement (copie EXACTE du tableau affiché)
+    agg1 = _agg_from_dfmin(df_min, gout1)
+    agg2 = _agg_from_dfmin(df_min, gout2) if gout2 else None
 
-# Gauche (Produit 1)
-for k, dest in P1.items():
-    _write_if_pos(dest["b"], agg1[k]["bouteilles"])
-    _write_if_pos(dest["c"], agg1[k]["cartons"])
+    # N'écrit rien si 0 → on laisse les pointillés du modèle
+    def _write_if_pos(addr: str, val):
+        v = int(pd.to_numeric(val, errors="coerce") or 0)
+        if v > 0:
+            _set(ws, addr, v)
 
-# Droite (Produit 2) si présent (sinon on ne touche pas aux pointillés)
-if agg2 is not None:
-    for k, dest in P2.items():
-        _write_if_pos(dest["b"], agg2[k]["bouteilles"])
-        _write_if_pos(dest["c"], agg2[k]["cartons"])
+    # Gauche (Produit 1)
+    for k, dest in P1.items():
+        _write_if_pos(dest["b"], agg1[k]["bouteilles"])
+        _write_if_pos(dest["c"], agg1[k]["cartons"])
 
-
+    # Droite (Produit 2) si présent (sinon on ne touche pas aux pointillés)
+    if agg2 is not None:
+        for k, dest in P2.items():
+            _write_if_pos(dest["b"], agg2[k]["bouteilles"])
+            _write_if_pos(dest["c"], agg2[k]["cartons"])
 
     bio = io.BytesIO()
     wb.save(bio)
