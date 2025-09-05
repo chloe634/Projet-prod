@@ -45,10 +45,10 @@ def _format_tag(s: str) -> str | None:
 
 def _format_from_stock(stock_txt: str) -> str | None:
     """
-    Détecte le format à partir d'un libellé Stock très libre :
-    - supporte 0.33L / 0,33 L / 0.75L / 0,75 L
-    - supporte 33cl / 75cl (avec ou sans espace, casse libre)
-    - l'ordre important : d'abord le nb de bouteilles, puis le volume
+    Détecte 12x33 / 6x75 / 4x75 depuis 'Stock' très libre :
+    - 0.33L / 0,33 L / 0.75L / 0,75 L
+    - 33cl / 75cl (avec/sans espace)
+    - tolère mots/tirets entre nb bouteilles et volume
     """
     if not stock_txt:
         return None
@@ -56,21 +56,21 @@ def _format_from_stock(stock_txt: str) -> str | None:
     s = str(stock_txt)
     s_low = s.lower().replace("×", "x")
 
-    # 1) '12x33' / '6x75' explicites (au cas où)
+    # 1) '12x33', '6x75' explicites
     m = re.search(r"\b(12|6|4)\s*x\s*(33|75)\b", s_low)
     if m:
         nb, vol = int(m.group(1)), int(m.group(2))
         if nb == 12 and vol == 33: return "12x33"
-        if nb == 6 and vol == 75:  return "6x75"
-        if nb == 4 and vol == 75:  return "4x75"
+        if nb == 6  and vol == 75: return "6x75"
+        if nb == 4  and vol == 75: return "4x75"
 
-    # 2) Littres : "... 12 ... 0.33L" (tirets, mots, etc. autorisés)
+    # 2) Litres : "... 12 ... 0.33L"
     m_l = re.search(r"\b(\d+)\b.*?\b(0[.,]\d+)\s*l\b", s_low, flags=re.IGNORECASE)
     if m_l:
         try:
             nb = int(m_l.group(1))
             vol_l = float(m_l.group(2).replace(",", "."))
-            vol_cl = int(round(vol_l * 100))  # 0.33 -> 33 ; 0.75 -> 75
+            vol_cl = int(round(vol_l * 100))   # 0.33 -> 33 ; 0.75 -> 75
             if nb == 12 and vol_cl == 33: return "12x33"
             if nb == 6  and vol_cl == 75: return "6x75"
             if nb == 4  and vol_cl == 75: return "4x75"
@@ -90,6 +90,7 @@ def _format_from_stock(stock_txt: str) -> str | None:
             pass
 
     return None
+
 
 # ====== Extraction PDF → mapping (Produit -> {format, ref, poids_carton}) ======
 def _parse_reference_pdf(pdf_path: str) -> pd.DataFrame:
