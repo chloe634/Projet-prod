@@ -26,21 +26,53 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()
 
 def _format_tag(s: str) -> str | None:
-    """Retourne '12x33' / '6x75' / '4x75' si trouvé dans un libellé."""
-    if not s: return None
+    """Détecte '12x33', '6x75', '4x75' quand ils sont écrits explicitement."""
+    if not s:
+        return None
     t = str(s).replace("×", "x").lower()
-    m = re.search(r"\b(12|6|4)\s*x\s*(33|75)\s*c?l\b", t)
-    if not m: m = re.search(r"\b(12|6|4)\s*x\s*(33|75)\b", t)
+    # formes "12x33cl", "12 x 33 cl", etc.
+    m = re.search(r"\b(12|6|4)\s*x\s*(33|75)\s*c?l?\b", t)
     if m:
         nb, vol = int(m.group(1)), int(m.group(2))
         if nb == 12 and vol == 33: return "12x33"
         if nb == 6 and vol == 75:  return "6x75"
         if nb == 4 and vol == 75:  return "4x75"
-    # variantes tolérantes
-    if re.search(r"12\s*x?\s*33", t): return "12x33"
-    if re.search(r"6\s*x?\s*75",  t): return "6x75"
-    if re.search(r"4\s*x?\s*75",  t): return "4x75"
+    # variantes très tolérantes (sans 'x' mais collées)
+    if re.search(r"\b12\s*[*x]?\s*33\b", t): return "12x33"
+    if re.search(r"\b6\s*[*x]?\s*75\b",  t): return "6x75"
+    if re.search(r"\b4\s*[*x]?\s*75\b",  t): return "4x75"
     return None
+
+def _format_from_stock(stock_txt: str) -> str | None:
+    """
+    Détection robuste depuis la colonne Stock :
+    - essaie d'abord _format_tag (12x33, 6x75, 4x75)
+    - sinon parse 'Carton de 12 ... 33 cL' / 'Pack de 6 ... 75 cl' / etc.
+    """
+    if not stock_txt:
+        return None
+    # 1) direct
+    fmt = _format_tag(stock_txt)
+    if fmt:
+        return fmt
+    # 2) "Carton de 12 Bouteilles 33 cL", "Pack de 4 75 cl", etc.
+    s = str(stock_txt)
+    m = re.search(
+        r"(?:carton|caisse|colis|pack)\s+de\s*(\d+).*?(\d+(?:[.,]\d+)?)\s*c?l",
+        s, flags=re.IGNORECASE
+    )
+    if m:
+        try:
+            nb = int(m.group(1))
+            vol = float(m.group(2).replace(",", "."))
+            vol_int = int(round(vol))  # 33.0 -> 33 ; 75.0 -> 75
+            if nb == 12 and vol_int == 33: return "12x33"
+            if nb == 6 and vol_int == 75:  return "6x75"
+            if nb == 4 and vol_int == 75:  return "4x75"
+        except Exception:
+            pass
+    return None
+
 
 # ====== Extraction PDF → mapping (Produit -> {format, ref, poids_carton}) ======
 def _parse_reference_pdf(pdf_path: str) -> pd.DataFrame:
@@ -154,10 +186,35 @@ for _, r in df_min_saved.iterrows():
         if key not in {(o["gout_key"], o["format"]) for o in opts_rows}:
             opts_rows.append({"label": label, "gout": gout, "gout_key": gout.lower(), "format": fmt})
 
-opts_df = pd.DataFrame(opts_rows).sort_values("label").reset_index(drop=True)
-if opts_df.empty:
-    st.error("Impossible de détecter les formats (33/75) depuis le tableau de production sauvegardé.")
+# -- Construction robuste de la liste "Goût — Format" depuis df_min_saved --
+opts_rows = []
+seen = set()
+
+for _, r in df_min_saved.iterrows():
+    gout = str(r.get("GoutCanon") or "").strip()
+    stock = str(r.get("Stock") or "")
+    fmt = _format_from_stock(stock)   # <-- utilise la nouvelle fonction robuste
+    if gout and fmt:
+        key = (gout.lower(), fmt)
+        if key not in seen:
+            opts_rows.append({
+                "label": f"{gout} — {fmt}",
+                "gout": gout,
+                "gout_key": gout.lower(),
+                "format": fmt,
+            })
+            seen.add(key)
+
+if not opts_rows:
+    st.error(
+        "Impossible de détecter les **formats** (12x33, 6x75, 4x75) dans le tableau de production sauvegardé.\n\n"
+        "Vérifie la colonne **Stock** (ex. *Carton de 12 Bouteilles 33 cL*, *Pack de 6 75 cL*, etc.)."
+    )
+    st.write("Aperçu des 10 premières valeurs de `Stock` :", df_min_saved.get("Stock", pd.Series()).head(10))
     st.stop()
+
+opts_df = pd.DataFrame(opts_rows).sort_values(by="label").reset_index(drop=True)
+
 
 # 2) Charge le mapping Référence + Poids/carton depuis le PDF
 ref_map = _parse_reference_pdf(REF_PDF_PATH)
