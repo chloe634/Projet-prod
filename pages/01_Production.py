@@ -96,61 +96,64 @@ st.data_editor(
     },
 )
 
-# --- En-dessous du tableau : saisies & génération PDF ---
+# --- Génération Fiche de production (modèle Excel) ---
 import datetime as _dt
 from dateutil.relativedelta import relativedelta
-from common.pdf import generate_production_pdf
+from common.xlsx_fill import fill_fiche_7000L_xlsx
 
 st.markdown("---")
-st.subheader("Fiche de production")
+st.subheader("Fiche de production (modèle Excel)")
 
-colD1, colD2 = st.columns(2)
-with colD1:
+cA, cB = st.columns(2)
+with cA:
     date_semaine = st.date_input("Semaine du", value=_dt.date.today())
-with colD2:
-    ddm_date = st.date_input("DDM", value=_dt.date.today() + relativedelta(months=6))
+with cB:
+    ddm_date = st.date_input("DDM", value=_dt.date.today() + relativedelta(years=1))
 
-# Sauvegarde logique (on mémorise la production affichée)
 if st.button("💾 Sauvegarder cette production", use_container_width=True):
     st.session_state["saved_production"] = {
         "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
-        "semaine_du": str(date_semaine),
-        "ddm": str(ddm_date),
-        "df_calc": df_calc.copy(),   # le détail complet (pour le PDF)
-        "df_min": df_min.copy(),     # le tableau utilisateur
+        "semaine_du": date_semaine.isoformat(),
+        "ddm": ddm_date.isoformat(),
+        "df_calc": df_calc.copy(),
+        "df_min": df_min.copy(),
+        "gouts": gouts_cibles,  # ordre de priorité retourné par compute_plan
     }
-    st.success("Production sauvegardée pour génération de la fiche.")
+    st.success("Production sauvegardée.")
 
-# Si on a une prod sauvegardée, on propose la génération PDF
 sp = st.session_state.get("saved_production")
 if sp:
-    # Déduire Produit 1 & Produit 2 depuis df_min sauvegardé (ordre affiché)
-    _df_min = sp["df_min"]
-    produits_list = _df_min["Produit"].astype(str).tolist() if "Produit" in _df_min.columns else []
-    produit_1 = produits_list[0] if len(produits_list) >= 1 else ""
-    produit_2 = produits_list[1] if len(produits_list) >= 2 else None
+    # Déterminer Produit 1 / 2 depuis les goûts sélectionnés
+    g1 = (sp["gouts"][0] if len(sp["gouts"]) >= 1 else "")
+    g2 = (sp["gouts"][1] if len(sp["gouts"]) >= 2 else None)
 
-    # Construit le PDF
-    pdf_bytes = generate_production_pdf(
-        semaine_du=_dt.datetime.fromisoformat(sp["semaine_du"]).date(),
-        ddm=_dt.datetime.fromisoformat(sp["ddm"]).date(),
-        produit_1=produit_1,
-        produit_2=produit_2,
-        df_calc=sp["df_calc"],
-        entreprise="Ferment Station",
-        titre_modele="Fiche de production 7000L",
-    )
+    # Construire l'XLSX rempli à partir du modèle
+    TEMPLATE_PATH = "assets/Fiche de Prod 5K - 250829.xlsx"  # mets ton fichier ici
+    try:
+        xlsx_bytes = fill_fiche_7000L_xlsx(
+            template_path=TEMPLATE_PATH,
+            semaine_du=_dt.date.fromisoformat(sp["semaine_du"]),
+            ddm=_dt.date.fromisoformat(sp["ddm"]),
+            gout1=g1,
+            gout2=g2,
+            df_calc=sp["df_calc"],
+        )
 
-    # Nom de fichier — les '/' ne sont pas valides dans un nom de fichier
-    semaine_label = _dt.datetime.fromisoformat(sp["semaine_du"]).date().strftime("%d-%m-%Y")
-    filename = f"Fiche de production (semaine du {semaine_label}).pdf"
+        # Nom de fichier
+        semaine_label = _dt.date.fromisoformat(sp["semaine_du"]).strftime("%d-%m-%Y")
+        fname_xlsx = f"Fiche de production (semaine du {semaine_label}).xlsx"
 
-    st.download_button(
-        "📄 Télécharger la fiche PDF",
-        data=pdf_bytes,
-        file_name=filename,
-        mime="application/pdf",
-        use_container_width=True,
-    )
+        st.download_button(
+            "📄 Télécharger la fiche (XLSX, 2 pages, identique au modèle)",
+            data=xlsx_bytes,
+            file_name=fname_xlsx,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+        st.info("Pour un PDF strictement identique (avec les formules évaluées), ouvre ce fichier dans Excel et fais **Fichier → Exporter en PDF**.")
+    except FileNotFoundError:
+        st.error("Modèle introuvable. Place le fichier **assets/Fiche de Prod 5K - 250829.xlsx** dans le repo.")
+    except Exception as e:
+        st.error(f"Erreur lors du remplissage du modèle : {e}")
 
 
