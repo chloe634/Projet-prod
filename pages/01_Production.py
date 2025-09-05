@@ -96,4 +96,61 @@ st.data_editor(
     },
 )
 
+# --- En-dessous du tableau : saisies & génération PDF ---
+import datetime as _dt
+from dateutil.relativedelta import relativedelta
+from common.pdf import generate_production_pdf
+
+st.markdown("---")
+st.subheader("Fiche de production")
+
+colD1, colD2 = st.columns(2)
+with colD1:
+    date_semaine = st.date_input("Semaine du", value=_dt.date.today())
+with colD2:
+    ddm_date = st.date_input("DDM", value=_dt.date.today() + relativedelta(months=6))
+
+# Sauvegarde logique (on mémorise la production affichée)
+if st.button("💾 Sauvegarder cette production", use_container_width=True):
+    st.session_state["saved_production"] = {
+        "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
+        "semaine_du": str(date_semaine),
+        "ddm": str(ddm_date),
+        "df_calc": df_calc.copy(),   # le détail complet (pour le PDF)
+        "df_min": df_min.copy(),     # le tableau utilisateur
+    }
+    st.success("Production sauvegardée pour génération de la fiche.")
+
+# Si on a une prod sauvegardée, on propose la génération PDF
+sp = st.session_state.get("saved_production")
+if sp:
+    # Déduire Produit 1 & Produit 2 depuis df_min sauvegardé (ordre affiché)
+    _df_min = sp["df_min"]
+    produits_list = _df_min["Produit"].astype(str).tolist() if "Produit" in _df_min.columns else []
+    produit_1 = produits_list[0] if len(produits_list) >= 1 else ""
+    produit_2 = produits_list[1] if len(produits_list) >= 2 else None
+
+    # Construit le PDF
+    pdf_bytes = generate_production_pdf(
+        semaine_du=_dt.datetime.fromisoformat(sp["semaine_du"]).date(),
+        ddm=_dt.datetime.fromisoformat(sp["ddm"]).date(),
+        produit_1=produit_1,
+        produit_2=produit_2,
+        df_calc=sp["df_calc"],
+        entreprise="Ferment Station",
+        titre_modele="Fiche de production 7000L",
+    )
+
+    # Nom de fichier — les '/' ne sont pas valides dans un nom de fichier
+    semaine_label = _dt.datetime.fromisoformat(sp["semaine_du"]).date().strftime("%d-%m-%Y")
+    filename = f"Fiche de production (semaine du {semaine_label}).pdf"
+
+    st.download_button(
+        "📄 Télécharger la fiche PDF",
+        data=pdf_bytes,
+        file_name=filename,
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
 
