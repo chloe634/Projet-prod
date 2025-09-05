@@ -2,11 +2,11 @@
 from __future__ import annotations
 import io
 from datetime import date
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple, List
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import openpyxl
-from openpyxl.utils import coordinate_to_tuple
+from openpyxl.utils import coordinate_to_tuple, get_column_letter
 
 VOL_TOL = 0.02
 
@@ -16,16 +16,8 @@ def _is_close(a: float, b: float, tol: float = VOL_TOL) -> bool:
     except Exception:
         return False
 
+# ---------- Agrégat depuis df_calc (cartons & bouteilles) ----------
 def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[str, Dict[str, int]]:
-    """
-    Agrège CARTONS et BOUTEILLES à produire pour un goût donné, ventilés ainsi :
-      - 33cl x12 FRANCE -> key "33_fr"
-      - 33cl x12 NIKO   -> key "33_niko"
-      - 75cl x6         -> key "75x6"
-      - 75cl x4         -> key "75x4"
-    Règle 33cl : si libellé produit contient 'NIKO' => NIKO, sinon FRANCE.
-                 Tout libellé contenant 'Kéfir/Kefir' est rangé FRANCE par défaut.
-    """
     out = {
         "33_fr":  {"cartons": 0, "bouteilles": 0},
         "33_niko":{"cartons": 0, "bouteilles": 0},
@@ -36,8 +28,8 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[st
         return out
 
     req = {
-        "GoutCanon", "Produit", "Bouteilles/carton", "Volume bouteille (L)",
-        "Cartons à produire (arrondi)", "Bouteilles à produire (arrondi)"
+        "GoutCanon","Produit","Bouteilles/carton","Volume bouteille (L)",
+        "Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"
     }
     if any(c not in df_calc.columns for c in req):
         return out
@@ -54,7 +46,7 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[st
     # 33 cL x12 -> France ou NIKO
     m33 = (df["Bouteilles/carton"] == 12) & (_is_close(df["Volume bouteille (L)"], 0.33))
     if m33.any():
-        part = df.loc[m33, ["Produit", "Cartons à produire (arrondi)", "Bouteilles à produire (arrondi)"]].copy()
+        part = df.loc[m33, ["Produit","Cartons à produire (arrondi)","Bouteilles à produire (arrondi)"]].copy()
         up = part["Produit"].astype(str).str.upper()
         is_niko  = up.str.contains("NIKO", na=False)
         is_kefir = up.str.contains("KÉFIR|KEFIR", na=False)
@@ -84,13 +76,9 @@ def _agg_counts_by_format_and_brand(df_calc: pd.DataFrame, gout: str) -> Dict[st
 
     return out
 
+# ---------- Helper : écrire même si la cellule est fusionnée ----------
 def _set(ws, addr: str, value, number_format: str | None = None):
-    """
-    Ecrit `value` dans `addr`. Si `addr` appartient à une zone fusionnée,
-    redirige vers la cellule *top-left* (rng.min_row, rng.min_col).
-    """
     row, col = coordinate_to_tuple(addr)
-    # Si addr est dans une fusion, vise le top-left
     for rng in ws.merged_cells.ranges:
         if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
             row, col = rng.min_row, rng.min_col
@@ -99,78 +87,145 @@ def _set(ws, addr: str, value, number_format: str | None = None):
     cell.value = value
     if number_format:
         cell.number_format = number_format
+    return f"{get_column_letter(col)}{row}"
 
+# ---------- Détection auto des blocs “Quantité / France / NIKO / X6 / X4” ----------
+def _norm(s) -> str:
+    return str(s).strip().lower()
+
+def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
+    """
+    Repère automatiquement les 2 blocs (gauche/droite) :
+      - headers "France", "NIKO", "X6", "X4" sur une même ligne
+      - 'bouteilles_row' = header_row + 1
+      - 'cartons_row'    = header_row + 2
+    Retourne pour chaque côté les colonnes des 4 en-têtes.
+    """
+    # map: row -> {label: col}
+    row_hits: Dict[int, Dict[str,int]] = {}
+    labels = {"france","niko","x6","x4"}
+
+    for r in ws.iter_rows(values_only=False):
+        for c in r:
+            v = c.value
+            if isinstance(v, str):
+                nv = _norm(v)
+                if nv in labels:
+                    row_hits.setdefault(c.row, {})[nv] = c.column
+
+    # On garde les lignes qui ont au moins 3 des 4 libellés (tolérant)
+    candidates = [(row, cols) for row, cols in row_hits.items() if len(cols) >= 3]
+    if not candidates:
+        raise KeyError("En-têtes 'France/NIKO/X6/X4' introuvables.")
+
+    # Gauche = ligne avec plus petite moyenne de colonnes; Droite = la plus grande
+    def _avg_col(cols: Dict[str,int]) -> float:
+        return sum(cols.values()) / len(cols)
+
+    candidates.sort(key=lambda x: _avg_col(x[1]))
+    left_row, left_cols = candidates[0]
+    right_row, right_cols = candidates[-1]
+
+    # Compléter les colonnes manquantes si besoin (par proximité)
+    def _fill_missing(cols: Dict[str,int]) -> Dict[str,int]:
+        out = cols.copy()
+        # ordre attendu visuel : France < NIKO < X6 < X4
+        # si un manque, on tente d’estimer par interpolation (très tolérant)
+        keys = ["france","niko","x6","x4"]
+        present = [k for k in keys if k in out]
+        if present:
+            first_c = out[present[0]]
+            for k in keys:
+                out.setdefault(k, first_c)
+            # ré-ordonner grossièrement
+            # pas critique : on écrira au minimum France, NIKO et X6
+        return out
+
+    left_cols  = _fill_missing(left_cols)
+    right_cols = _fill_missing(right_cols)
+
+    return {
+        "left":  {"header_row": left_row,  "bouteilles_row": left_row+1,  "cartons_row": left_row+2,  **left_cols},
+        "right": {"header_row": right_row, "bouteilles_row": right_row+1, "cartons_row": right_row+2, **right_cols},
+    }
+
+def _addr(col: int, row: int) -> str:
+    return f"{get_column_letter(col)}{row}"
+
+# ---------- Filler principal ----------
 def fill_fiche_7000L_xlsx(
     template_path: str,
-    semaine_du: date,      # utilisé pour le nom de fichier côté appelant
+    semaine_du: date,
     ddm: date,
     gout1: str,
     gout2: Optional[str],
     df_calc: pd.DataFrame,
+    sheet_name: str | None = None,
 ) -> bytes:
     """
-    Remplit la feuille 'Fiche de production 7000 L' (ou '...7000L') du modèle :
-      - D8 = Produit 1 (goût), T8 = Produit 2
-      - D10 = DDM (format JJ/MM/AAAA)
-      - O10 = LOT = DDM sans '/'
-      - A20 = Date = DDM - 1 an
-      - D/F/H/J 15-16 et T/V/X/Z 15-16 = cartons & bouteilles par format
-    Retourne les bytes XLSX du classeur rempli (formules préservées).
+    Remplit la fiche de production (2 blocs) de façon robuste :
+      - Produit 1 -> bloc gauche ; Produit 2 -> bloc droite (si présent)
+      - DDM (JJ/MM/AAAA) + LOT = DDM sans '/'
+      - Date fermentation = DDM - 1 an
+      - Cellules quantité détectées automatiquement (pas d’adresses en dur)
     """
     wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
 
-    # Feuille tolérante (avec/sans espace)
-    target_names = ["Fiche de production 7000 L", "Fiche de production 7000L"]
+    # Choix de l’onglet
+    targets = [sheet_name] if sheet_name else ["Fiche de production 7000 L", "Fiche de production 7000L"]
     ws = None
-    for nm in target_names:
-        if nm in wb.sheetnames:
+    for nm in targets:
+        if nm and nm in wb.sheetnames:
             ws = wb[nm]
             break
     if ws is None:
         raise KeyError(f"Feuille cible introuvable. Feuilles présentes : {wb.sheetnames}")
 
-    # Produits
+    # En-tête : Produits / DDM / LOT / Fermentation
     _set(ws, "D8", gout1 or "")
     _set(ws, "T8", gout2 or "")
 
-    # DDM & LOT
     _set(ws, "D10", ddm, number_format="DD/MM/YYYY")
     _set(ws, "O10", ddm.strftime("%d%m%Y"))
 
-    # Fermentation > Date (DDM - 1 an)
     ferment_date = ddm - relativedelta(years=1)
     _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
 
-       # Cell mapping (conforme au modèle : Bouteilles = ligne 14, Cartons = ligne 15)
-    CELLS_P1 = {  # Produit 1 (bloc de gauche)
-        "33_fr":  {"cartons": "D15", "bouteilles": "D14"},
-        "33_niko":{"cartons": "F15", "bouteilles": "F14"},
-        "75x6":   {"cartons": "H15", "bouteilles": "H14"},
-        "75x4":   {"cartons": "J15", "bouteilles": "J14"},
+    # Repérage dynamique des tableaux quantités
+    blocks = _locate_quantity_blocks(ws)
+    L = blocks["left"]
+    R = blocks["right"]
+
+    # Adresses calculées à partir des en-têtes détectés
+    # Gauche (Produit 1) :
+    P1 = {
+        "33_fr":  {"b": _addr(L["france"], L["bouteilles_row"]), "c": _addr(L["france"], L["cartons_row"])},
+        "33_niko":{"b": _addr(L["niko"],   L["bouteilles_row"]), "c": _addr(L["niko"],   L["cartons_row"])},
+        "75x6":   {"b": _addr(L["x6"],     L["bouteilles_row"]), "c": _addr(L["x6"],     L["cartons_row"])},
+        "75x4":   {"b": _addr(L["x4"],     L["bouteilles_row"]), "c": _addr(L["x4"],     L["cartons_row"])},
     }
-    CELLS_P2 = {  # Produit 2 (bloc de droite)
-        "33_fr":  {"cartons": "T15", "bouteilles": "T14"},
-        "33_niko":{"cartons": "V15", "bouteilles": "V14"},
-        "75x6":   {"cartons": "X15", "bouteilles": "X14"},
-        "75x4":   {"cartons": "Z15", "bouteilles": "Z14"},
+    # Droite (Produit 2) :
+    P2 = {
+        "33_fr":  {"b": _addr(R["france"], R["bouteilles_row"]), "c": _addr(R["france"], R["cartons_row"])},
+        "33_niko":{"b": _addr(R["niko"],   R["bouteilles_row"]), "c": _addr(R["niko"],   R["cartons_row"])},
+        "75x6":   {"b": _addr(R["x6"],     R["bouteilles_row"]), "c": _addr(R["x6"],     R["cartons_row"])},
+        "75x4":   {"b": _addr(R["x4"],     R["bouteilles_row"]), "c": _addr(R["x4"],     R["cartons_row"])},
     }
 
-    # Produit 1
+    # Injection des données depuis df_calc (sauvegardé)
     agg1 = _agg_counts_by_format_and_brand(df_calc, gout1)
-    for key, dest in CELLS_P1.items():
-        _set(ws, dest["cartons"],    int(agg1[key]["cartons"]))
-        _set(ws, dest["bouteilles"], int(agg1[key]["bouteilles"]))
+    for k, dest in P1.items():
+        _set(ws, dest["b"], int(agg1[k]["bouteilles"]))
+        _set(ws, dest["c"], int(agg1[k]["cartons"]))
 
-    # Produit 2 (ou zéros)
     if gout2:
         agg2 = _agg_counts_by_format_and_brand(df_calc, gout2)
-        for key, dest in CELLS_P2.items():
-            _set(ws, dest["cartons"],    int(agg2[key]["cartons"]))
-            _set(ws, dest["bouteilles"], int(agg2[key]["bouteilles"]))
+        for k, dest in P2.items():
+            _set(ws, dest["b"], int(agg2[k]["bouteilles"]))
+            _set(ws, dest["c"], int(agg2[k]["cartons"]))
     else:
-        for key, dest in CELLS_P2.items():
-            _set(ws, dest["cartons"], 0)
-            _set(ws, dest["bouteilles"], 0)
+        for k, dest in P2.items():
+            _set(ws, dest["b"], 0); _set(ws, dest["c"], 0)
 
     bio = io.BytesIO()
     wb.save(bio)
