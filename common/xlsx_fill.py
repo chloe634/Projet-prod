@@ -147,20 +147,61 @@ def _norm(s) -> str:
     return str(s).strip().lower()
 
 def _locate_quantity_blocks(ws) -> Dict[str, Dict[str, int]]:
-    row_hits: Dict[int, Dict[str,int]] = {}
-    labels = {"france","niko","x6","x4"}
-
+    """
+    Repère automatiquement les 4 zones 'France / NIKO / X6 / X4' qui existent
+    deux fois dans le modèle (haut = résumé, bas = zone d'entrée).
+    On renvoie **la paire du BAS** (celle utilisée par les formules).
+    Structure retournée :
+      {
+        "left":  {"header_row": r, "bouteilles_row": r+1, "cartons_row": r+2,
+                  "france": col, "niko": col, "x6": col, "x4": col},
+        "right": {...}
+      }
+    """
+    # 1) recense toutes les lignes où on voit au moins 3 libellés parmi France/NIKO/X6/X4
+    labels = {"france", "niko", "x6", "x4"}
+    row_hits: Dict[int, Dict[str, int]] = {}
     for r in ws.iter_rows(values_only=False):
         for c in r:
             v = c.value
             if isinstance(v, str):
-                nv = _norm(v)
+                nv = str(v).strip().lower()
                 if nv in labels:
                     row_hits.setdefault(c.row, {})[nv] = c.column
 
+    # candidates = [(row, {label->col})] et on garde seulement les lignes crédibles
     candidates = [(row, cols) for row, cols in row_hits.items() if len(cols) >= 3]
-    if not candidates:
-        raise KeyError("En-têtes 'France/NIKO/X6/X4' introuvables.")
+    if len(candidates) < 2:
+        raise KeyError("En-têtes 'France/NIKO/X6/X4' introuvables (paire du bas non détectée).")
+
+    # 2) On veut la paire **du bas** : on prend les 2 lignes avec les plus grands index.
+    candidates.sort(key=lambda x: x[0])           # tri par numéro de ligne
+    bottom_pair = candidates[-2:]                 # les 2 dernières lignes (bas de page)
+
+    # 3) Détermine gauche/droite en fonction de la moyenne des colonnes
+    def _avg_col(cols: Dict[str, int]) -> float:
+        return sum(cols.values()) / len(cols)
+
+    bottom_pair.sort(key=lambda x: _avg_col(x[1]))  # gauche puis droite
+    (left_row, left_cols), (right_row, right_cols) = bottom_pair
+
+    # 4) complète les colonnes manquantes si besoin (très tolérant)
+    def _fill_missing(cols: Dict[str, int]) -> Dict[str, int]:
+        out = cols.copy()
+        order = ["france", "niko", "x6", "x4"]
+        if order[0] in out:
+            first_c = out[order[0]]
+            for k in order:
+                out.setdefault(k, first_c)
+        return out
+
+    left_cols  = _fill_missing(left_cols)
+    right_cols = _fill_missing(right_cols)
+
+    return {
+        "left":  {"header_row": left_row,  "bouteilles_row": left_row + 1, "cartons_row": left_row + 2, **left_cols},
+        "right": {"header_row": right_row, "bouteilles_row": right_row + 1, "cartons_row": right_row + 2, **right_cols},
+    }
 
     def _avg_col(cols: Dict[str,int]) -> float:
         return sum(cols.values()) / len(cols)
