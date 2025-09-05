@@ -141,18 +141,18 @@ def fill_fiche_7000L_xlsx(
     ferment_date = ddm - relativedelta(years=1)
     _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
 
-    # Cell mapping : adapte si ta maquette a d'autres lignes
-    CELLS_P1 = {  # Produit 1
-        "33_fr":  {"cartons": "D15", "bouteilles": "D16"},
-        "33_niko":{"cartons": "F15", "bouteilles": "F16"},
-        "75x6":   {"cartons": "H15", "bouteilles": "H16"},
-        "75x4":   {"cartons": "J15", "bouteilles": "J16"},
+       # Cell mapping (conforme au modèle : Bouteilles = ligne 14, Cartons = ligne 15)
+    CELLS_P1 = {  # Produit 1 (bloc de gauche)
+        "33_fr":  {"cartons": "D15", "bouteilles": "D14"},
+        "33_niko":{"cartons": "F15", "bouteilles": "F14"},
+        "75x6":   {"cartons": "H15", "bouteilles": "H14"},
+        "75x4":   {"cartons": "J15", "bouteilles": "J14"},
     }
-    CELLS_P2 = {  # Produit 2
-        "33_fr":  {"cartons": "T15", "bouteilles": "T16"},
-        "33_niko":{"cartons": "V15", "bouteilles": "V16"},
-        "75x6":   {"cartons": "X15", "bouteilles": "X16"},
-        "75x4":   {"cartons": "Z15", "bouteilles": "Z16"},
+    CELLS_P2 = {  # Produit 2 (bloc de droite)
+        "33_fr":  {"cartons": "T15", "bouteilles": "T14"},
+        "33_niko":{"cartons": "V15", "bouteilles": "V14"},
+        "75x6":   {"cartons": "X15", "bouteilles": "X14"},
+        "75x4":   {"cartons": "Z15", "bouteilles": "Z14"},
     }
 
     # Produit 1
