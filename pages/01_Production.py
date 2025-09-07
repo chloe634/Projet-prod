@@ -37,7 +37,13 @@ window_days = st.session_state.window_days
 
 # ---------------- Préparation des données ----------------
 fm = load_flavor_map_from_path(flavor_map)
-df_in = apply_canonical_flavor(df_in_raw, fm)
+try:
+    df_in = apply_canonical_flavor(df_in_raw, fm)
+except KeyError as e:
+    st.error(f"{e}")
+    st.info("Astuce : vérifie la 1ère ligne (en-têtes) de ton Excel et renomme la colonne du nom produit en **'Produit'** ou **'Désignation'**.")
+    st.stop()
+
 df_in["Produit"] = df_in["Produit"].astype(str)
 df_in = sanitize_gouts(df_in)
 
