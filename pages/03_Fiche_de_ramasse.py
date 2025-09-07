@@ -412,7 +412,7 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     pdf.cell(widths[4],8,_pdf_txt(totals["palettes"]),border=1,align="C")
     pdf.cell(widths[5],8,_pdf_txt(totals["poids"]),border=1,align="C")
 
-    return pdf.output(dest="S").encode("latin1")
+    return pdf.output(dest="S")
 
 
 st.markdown("---")
