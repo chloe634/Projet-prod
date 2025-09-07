@@ -352,55 +352,68 @@ with c3:
 
 st.dataframe(df_calc[display_cols], use_container_width=True, hide_index=True)
 
+def _pdf_txt(x) -> str:
+    """
+    Rend le texte compatible Latin-1 pour FPDF :
+    - remplace les tirets/guillemets typographiques
+    - force l'encodage latin-1 (en ignorant les glyphes non supportés)
+    """
+    s = str(x)
+    s = (s
+         .replace("—", "-").replace("–", "-").replace("•", "-")
+         .replace("’", "'").replace("‘", "'")
+         .replace("“", '"').replace("”", '"'))
+    try:
+        s.encode("latin-1")
+        return s
+    except UnicodeEncodeError:
+        return s.encode("latin-1", "ignore").decode("latin-1")
+
+
 # 7) Génération PDF
-def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date, df_lines: pd.DataFrame, totals: dict) -> bytes:
+def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
+                 df_lines: pd.DataFrame, totals: dict) -> bytes:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
 
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, "FERMENT STATION — FICHE DE RAMASSE", ln=1)
+    pdf.cell(0, 8, _pdf_txt("FERMENT STATION - FICHE DE RAMASSE"), ln=1)  # tiret simple
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, f"DATE DE CREATION : {date_creation.strftime('%d/%m/%Y')}", ln=1)
-    pdf.cell(0, 6, f"DATE DE RAMASSE : {date_ramasse.strftime('%d/%m/%Y')}", ln=1)
+    pdf.cell(0, 6, _pdf_txt(f"DATE DE CREATION : {date_creation.strftime('%d/%m/%Y')}"), ln=1)
+    pdf.cell(0, 6, _pdf_txt(f"DATE DE RAMASSE : {date_ramasse.strftime('%d/%m/%Y')}"), ln=1)
     pdf.ln(2)
 
-    headers = [
-        "Référence",
-        "Produit (goût + format)",
-        "DDM",
-        "Quantité cartons",
-        "Quantité palettes",
-        "Poids palettes (kg)",
-    ]
-    widths = [28, 86, 20, 28, 28, 28]
+    headers = ["Référence","Produit (goût + format)","DDM","Quantité cartons","Quantité palettes","Poids palettes (kg)"]
+    widths  = [28, 86, 20, 28, 28, 28]
 
     pdf.set_font("Helvetica", "B", 10)
-    for h, w in zip(headers, widths):
-        pdf.cell(w, 8, h, border=1, align="C")
+    for h,w in zip(headers, widths):
+        pdf.cell(w, 8, _pdf_txt(h), border=1, align="C")
     pdf.ln(8)
 
     pdf.set_font("Helvetica", "", 10)
     for _, r in df_lines.iterrows():
         row = [
-            str(r["Référence"]),
-            str(r["Produit (goût + format)"]),
-            str(r["DDM"]),
-            str(int(pd.to_numeric(r["Quantité cartons"], errors="coerce") or 0)),
-            str(int(pd.to_numeric(r["Quantité palettes"], errors="coerce") or 0)),
-            str(int(pd.to_numeric(r["Poids palettes (kg)"], errors="coerce") or 0)),
+            _pdf_txt(r["Référence"]),
+            _pdf_txt(r["Produit (goût + format)"]),
+            _pdf_txt(r["DDM"]),
+            _pdf_txt(int(pd.to_numeric(r["Quantité cartons"], errors="coerce") or 0)),
+            _pdf_txt(int(pd.to_numeric(r["Quantité palettes"], errors="coerce") or 0)),
+            _pdf_txt(int(pd.to_numeric(r["Poids palettes (kg)"], errors="coerce") or 0)),
         ]
-        for i, (txt, w) in enumerate(zip(row, widths)):
-            pdf.cell(w, 8, txt, border=1, align="C" if i != 1 else "L")
+        for i,(txt,w) in enumerate(zip(row, widths)):
+            pdf.cell(w, 8, str(txt), border=1, align="C" if i != 1 else "L")
         pdf.ln(8)
 
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(widths[0] + widths[1] + widths[2], 8, "TOTAL", border=1, align="R")
-    pdf.cell(widths[3], 8, str(totals["cartons"]), border=1, align="C")
-    pdf.cell(widths[4], 8, str(totals["palettes"]), border=1, align="C")
-    pdf.cell(widths[5], 8, str(totals["poids"]), border=1, align="C")
+    pdf.set_font("Helvetica","B",10)
+    pdf.cell(widths[0]+widths[1]+widths[2],8,_pdf_txt("TOTAL"),border=1, align="R")
+    pdf.cell(widths[3],8,_pdf_txt(totals["cartons"]),border=1,align="C")
+    pdf.cell(widths[4],8,_pdf_txt(totals["palettes"]),border=1,align="C")
+    pdf.cell(widths[5],8,_pdf_txt(totals["poids"]),border=1,align="C")
 
     return pdf.output(dest="S").encode("latin1")
+
 
 st.markdown("---")
 if st.button("🧾 Générer la fiche de ramasse (PDF)", use_container_width=True, type="primary"):
