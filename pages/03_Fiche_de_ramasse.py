@@ -10,6 +10,26 @@ from fpdf import FPDF
 
 from common.design import apply_theme, section, kpi
 
+# ---- Identité / Destinataire (adapter si besoin) ----
+LOGO_PATH = "assets/logo_symbiose.png"  # optionnel: si absent on ignore le logo
+COMPANY_LINES = [
+    "FERMENT STATION",
+    "Carré Ivry Bâtiment D2",
+    "47 rue Ernest Renan",
+    "94200 Ivry-sur-Seine - FRANCE",
+    "Tél : 0967504647",
+    "Site : https://www.symbiose-kefir.fr",
+    "Produits issus de l'Agriculture Biologique certifié par FR-BIO-01",
+]
+
+DEST_TITLE = "SOFRIPA"
+DEST_LINES = [
+    "ZAC du Haut de Wissous II,",
+    "Rue Hélène Boucher, 91320 Wissous",
+]
+
+
+
 # Chemin de la table de référence (remplace l'ancien PDF)
 REF_CSV_PATH = "assets/info_FDR.csv"
 
@@ -373,55 +393,136 @@ def _pdf_txt(x) -> str:
 # 7) Génération PDF
 def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
                  df_lines: pd.DataFrame, totals: dict) -> bytes:
+    """
+    Rend un PDF au format attendu:
+    - en-tête (logo + coordonnées)
+    - cartouche 'BON DE LIVRAISON' avec dates + destinataire
+    - tableau avec bordures + ligne TOTAL
+    """
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
 
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, _pdf_txt("FERMENT STATION - FICHE DE RAMASSE"), ln=1)  # tiret simple
+    LEFT = 12
+    RIGHT = 198   # largeur utile = 210 - 12 mm marge gauche
+    WIDTH = RIGHT - LEFT
+
+    # ---------- ENTÊTE (logo + coordonnées) ----------
+    top_y = 12
+    logo_h = 18
+    if os.path.exists(LOGO_PATH):
+        try:
+            pdf.image(LOGO_PATH, x=LEFT, y=top_y, h=logo_h)
+        except Exception:
+            pass
+
+    pdf.set_xy(LEFT + (logo_h + 6 if os.path.exists(LOGO_PATH) else 0), top_y)
+    pdf.set_font("Helvetica", "", 11)
+    for i, line in enumerate(COMPANY_LINES[:6]):
+        pdf.cell(0, 5, _pdf_txt(line), ln=1)
+    pdf.ln(1)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(0, 4, _pdf_txt(COMPANY_LINES[6] if len(COMPANY_LINES) > 6 else ""), ln=1)
+
+    pdf.ln(4)
+
+    # ---------- CARTOUCHE 'BON DE LIVRAISON' ----------
+    pdf.set_font("Helvetica", "B", 12)
+    # cadre
+    box_x = LEFT
+    box_y = pdf.get_y() + 2
+    box_w = WIDTH
+    box_h = 26
+    pdf.rect(box_x, box_y, box_w, box_h)
+
+    # titre cartouche
+    pdf.set_xy(box_x + 3, box_y + 2)
+    pdf.cell(0, 6, _pdf_txt("BON DE LIVRAISON"), ln=1)
+
+    # colonnes gauche/droite à l'intérieur du cartouche
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, _pdf_txt(f"DATE DE CREATION : {date_creation.strftime('%d/%m/%Y')}"), ln=1)
-    pdf.cell(0, 6, _pdf_txt(f"DATE DE RAMASSE : {date_ramasse.strftime('%d/%m/%Y')}"), ln=1)
-    pdf.ln(2)
+    inner_y = box_y + 10
+    pdf.set_xy(box_x + 3, inner_y)
+    pdf.cell(45, 6, _pdf_txt("DATE DE CREATION :"), ln=0)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(40, 6, _pdf_txt(date_creation.strftime("%d/%m/%Y")), ln=1)
 
-    headers = ["Référence","Produit (goût + format)","DDM","Quantité cartons","Quantité palettes","Poids palettes (kg)"]
-    widths  = [28, 86, 20, 28, 28, 28]
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_xy(box_x + 3, inner_y + 6)
+    pdf.cell(45, 6, _pdf_txt("DATE DE RAMMASSE :"), ln=0)  # orthographe conforme à ton exemple
+    pdf.cell(40, 6, _pdf_txt(date_ramasse.strftime("%d/%m/%Y")), ln=1)
 
+    # destinataire à droite dans la boîte
+    pdf.set_xy(box_x + 90, inner_y)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(30, 6, _pdf_txt("DESTINATAIRE :"), ln=1)
+    pdf.set_xy(box_x + 90, inner_y + 6)
     pdf.set_font("Helvetica", "B", 10)
-    for h,w in zip(headers, widths):
-        pdf.cell(w, 8, _pdf_txt(h), border=1, align="C")
-    pdf.ln(8)
+    pdf.cell(0, 6, _pdf_txt(DEST_TITLE), ln=1)
+    pdf.set_font("Helvetica", "", 10)
+    for i, l in enumerate(DEST_LINES):
+        pdf.set_xy(box_x + 90, inner_y + 12 + i * 6)
+        pdf.cell(0, 6, _pdf_txt(l), ln=1)
 
+    pdf.set_y(box_y + box_h + 8)
+
+    # ---------- TABLEAU ----------
+    # colonnes (total largeur utile ~ 186 mm)
+    headers = [
+        "Référence",
+        "Produit",
+        "DDM",
+        "Quantité cartons",
+        "Quantité palettes",
+        "Poids palettes (kg)",
+    ]
+    # Largeurs: 20 + 86 + 18 + 20 + 20 + 22 = 186
+    widths = [20, 86, 18, 20, 20, 22]
+    align = ["C", "L", "C", "C", "C", "C"]
+    line_h = 8
+
+    # en-tête de la table (ligne grasse + bordures)
+    x0 = LEFT
+    y0 = pdf.get_y()
+    pdf.set_font("Helvetica", "B", 10)
+    for h, w, a in zip(headers, widths, align):
+        pdf.cell(w, line_h, _pdf_txt(h), border=1, align=a)
+    pdf.ln(line_h)
+
+    # lignes
     pdf.set_font("Helvetica", "", 10)
     for _, r in df_lines.iterrows():
         row = [
             _pdf_txt(r["Référence"]),
-            _pdf_txt(r["Produit (goût + format)"]),
+            _pdf_txt(r["Produit (goût + format)"]).upper(),  # comme ton exemple
             _pdf_txt(r["DDM"]),
             _pdf_txt(int(pd.to_numeric(r["Quantité cartons"], errors="coerce") or 0)),
             _pdf_txt(int(pd.to_numeric(r["Quantité palettes"], errors="coerce") or 0)),
             _pdf_txt(int(pd.to_numeric(r["Poids palettes (kg)"], errors="coerce") or 0)),
         ]
-        for i,(txt,w) in enumerate(zip(row, widths)):
-            pdf.cell(w, 8, str(txt), border=1, align="C" if i != 1 else "L")
-        pdf.ln(8)
+        for i, (txt, w, a) in enumerate(zip(row, widths, align)):
+            pdf.cell(w, line_h, str(txt), border=1, align=a)
+        pdf.ln(line_h)
 
-    pdf.set_font("Helvetica","B",10)
-    pdf.cell(widths[0]+widths[1]+widths[2],8,_pdf_txt("TOTAL"),border=1, align="R")
-    pdf.cell(widths[3],8,_pdf_txt(totals["cartons"]),border=1,align="C")
-    pdf.cell(widths[4],8,_pdf_txt(totals["palettes"]),border=1,align="C")
-    pdf.cell(widths[5],8,_pdf_txt(totals["poids"]),border=1,align="C")
+    # ligne TOTAL
+    pdf.set_font("Helvetica", "B", 10)
+    # fusion des 3 premières colonnes pour 'TOTAL'
+    total_label_w = sum(widths[:3])
+    pdf.cell(total_label_w, line_h, _pdf_txt("TOTAL"), border=1, align="R")
+    pdf.cell(widths[3], line_h, _pdf_txt(totals["cartons"]), border=1, align="C")
+    pdf.cell(widths[4], line_h, _pdf_txt(totals["palettes"]), border=1, align="C")
+    pdf.cell(widths[5], line_h, _pdf_txt(totals["poids"]), border=1, align="C")
 
-        # --- à la place de: return pdf.output(dest="S") ---
-    buf = pdf.output(dest="S")  # fpdf2 peut renvoyer str, bytes ou bytearray selon la version
+    # ---------- sortie binaire ----------
+    buf = pdf.output(dest="S")  # fpdf2 → str / bytes / bytearray selon version
     if isinstance(buf, str):
-        data = buf.encode("latin-1", "ignore")  # garantit bytes
+        data = buf.encode("latin-1", "ignore")
     elif isinstance(buf, bytearray):
         data = bytes(buf)
     else:
-        data = buf  # déjà bytes
-
+        data = buf
     return data
+
 
 
 
