@@ -95,6 +95,14 @@ def _fmt_norm(s: str) -> str | None:
         if re.search(r"\b12x\b|de12|cartonde12", t): return "12x33"
     return None
 
+def _ref_from_codebarre(code: str) -> str:
+    """Retourne les 6 derniers chiffres d'un code-barres, ou '' si impossible."""
+    if not code:
+        return ""
+    digits = re.sub(r"\D", "", str(code))
+    return digits[-6:] if len(digits) >= 6 else ""
+
+
 def _extract_ref_from_designation(s: str) -> str:
     """Récupère le code entre parenthèses dans la désignation, ex: '(3383)' -> '3383'."""
     if not s:
@@ -104,8 +112,12 @@ def _extract_ref_from_designation(s: str) -> str:
 
 def _parse_reference_csv(csv_path: str) -> pd.DataFrame:
     """
-    Lit assets/info_FDR.csv et renvoie un DataFrame:
-    colonnes -> ['canon','format','reference','poids_carton_kg']
+    Lit assets/info_FDR.csv et renvoie un DataFrame avec colonnes:
+    ['canon','format','poids_carton_kg','code_barre']
+    - canon = goût canonisé (via Désignation ou Produit)
+    - format = '12x33' / '6x75' / '4x75'
+    - poids_carton_kg = float (7.23, 7.56, 4.68, ...)
+    - code_barre = str (peut contenir 13+ chiffres)
     """
     rows = []
     if os.path.exists(csv_path):
@@ -119,56 +131,61 @@ def _parse_reference_csv(csv_path: str) -> pd.DataFrame:
         col_fmt    = lower.get("format")
         col_des    = lower.get("désignation") or lower.get("designation")
         col_poids  = lower.get("poids")
+        col_ean    = (lower.get("code-barre") or lower.get("codebarre")
+                      or lower.get("code barre") or lower.get("ean"))
 
         for _, r in df.iterrows():
             prod = str(r.get(col_prod, "") or "")
             des  = str(r.get(col_des, "") or "")
             fmt1 = _fmt_norm(r.get(col_fmt, "")) or _fmt_norm(des) or _fmt_norm(prod)
+            if not fmt1:
+                continue
 
-            ref  = _extract_ref_from_designation(des)
+            # Poids
             poids = r.get(col_poids, None)
             try:
                 if isinstance(poids, str):
                     poids = float(poids.replace(",", "."))
+                elif pd.notna(poids):
+                    poids = float(poids)
                 else:
-                    poids = float(poids) if pd.notna(poids) else None
+                    poids = None
             except Exception:
                 poids = None
 
-            canon = _canon_gout(des or prod)
+            # Code-barre (on stocke brut; la ref = 6 derniers chiffres sera dérivée plus tard)
+            ean_raw = r.get(col_ean, "")
+            code_barre = re.sub(r"\D", "", str(ean_raw)) if pd.notna(ean_raw) else ""
 
-            if fmt1 and canon:
-                rows.append({
-                    "canon": canon,
-                    "format": fmt1,
-                    "reference": ref or "",
-                    "poids_carton_kg": poids
-                })
+            canon = _canon_gout(des or prod)
+            rows.append({
+                "canon": canon,
+                "format": fmt1,
+                "poids_carton_kg": poids,
+                "code_barre": code_barre,
+            })
 
     df_out = pd.DataFrame(rows)
     if df_out.empty:
+        # secours minimal, au cas où le CSV manque
         fallback = [
-            ("mangue passion", "12x33", "12",   7.56),
-            ("gingembre",      "12x33", "12",   7.56),
-            ("pamplemousse",   "12x33", "12",   7.56),
-            ("menthe citron vert","12x33","12", 7.56),
-            ("original",       "12x33", "12",   7.56),
-            ("mangue passion", "6x75",  "3383", 7.23),
-            ("gingembre",      "6x75",  "3383", 7.23),
-            ("pamplemousse",   "6x75",  "3383", 7.23),
-            ("menthe citron vert","6x75","3383",7.23),
-            ("mangue passion", "4x75",  "3382", 4.68),
-            ("gingembre",      "4x75",  "3382", 4.68),
-            ("pamplemousse",   "4x75",  "3382", 4.68),
-            ("menthe citron vert","4x75","3382",4.68),
+            ("mangue passion", "12x33", 7.56, ""), ("gingembre", "12x33", 7.56, ""),
+            ("pamplemousse","12x33", 7.56, ""), ("menthe citron vert","12x33", 7.56, ""),
+            ("original","12x33", 7.56, ""), ("mangue passion","6x75", 7.23, ""),
+            ("gingembre","6x75", 7.23, ""), ("pamplemousse","6x75", 7.23, ""),
+            ("menthe citron vert","6x75", 7.23, ""), ("mangue passion","4x75", 4.68, ""),
+            ("gingembre","4x75", 4.68, ""), ("pamplemousse","4x75", 4.68, ""),
+            ("menthe citron vert","4x75", 4.68, ""),
         ]
-        df_out = pd.DataFrame(fallback, columns=["canon","format","reference","poids_carton_kg"])
+        df_out = pd.DataFrame(fallback, columns=["canon","format","poids_carton_kg","code_barre"])
 
     df_out = df_out.dropna(subset=["canon","format"]).copy()
     df_out["canon"] = df_out["canon"].astype(str).str.strip().str.lower()
     df_out["format"] = df_out["format"].astype(str).str.strip()
+    # garde une seule ligne par (canon, format)
     df_out = df_out.drop_duplicates(subset=["canon","format"], keep="first").reset_index(drop=True)
     return df_out
+
 
 # =========================================================
 #                           UI
@@ -240,9 +257,18 @@ for lab in selection_labels:
     row = opts_df.loc[opts_df["label"] == lab].iloc[0]
     canon = row["gout_key"]; fmt = row["format"]
     m = ref_map[(ref_map["canon"] == canon) & (ref_map["format"] == fmt)]
-    ref = str(m["reference"].iloc[0]) if not m.empty and isinstance(m["reference"].iloc[0], (str, int)) else ""
-    poids_carton = float(m["poids_carton_kg"].iloc[0]) if (not m.empty and pd.notna(m["poids_carton_kg"].iloc[0])) else FALLBACK_POIDS_CARTON.get(fmt, 0.0)
-    if not ref:
+    
+    # 1) Poids carton depuis CSV
+    if not m.empty and pd.notna(m["poids_carton_kg"].iloc[0]):
+        poids_carton = float(m["poids_carton_kg"].iloc[0])
+    else:
+        poids_carton = float(FALLBACK_POIDS_CARTON.get(fmt, 0.0))
+    
+    # 2) Référence = 6 derniers chiffres du Code-barre
+    codeb = str(m["code_barre"].iloc[0]) if (not m.empty and "code_barre" in m.columns) else ""
+    ref6 = _ref_from_codebarre(codeb)
+    ref = ref6 if ref6 else FALLBACK_REF.get(fmt, "")
+
         ref = FALLBACK_REF.get(fmt, "")
 
     meta_by_label[lab] = {"_format": fmt, "_poids_carton": poids_carton, "_reference": ref}
