@@ -9,6 +9,7 @@ reportlab
 fpdf2
 python-dateutil
 pdfplumber
+pypdf
 
 
 
