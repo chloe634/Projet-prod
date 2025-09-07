@@ -413,17 +413,16 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
 
     # ---------- ENTÊTE ----------
     y = 14
-    # logo dimensionné en largeur fixe -> évite le chevauchement
-    logo_w = 36
-    logo_h = 18
+    # Logo : hauteur fixe -> évite le chevauchement avec le texte
+    logo_h = 16
     if os.path.exists(LOGO_PATH):
         try:
-            pdf.image(LOGO_PATH, x=MARGIN_L, y=y, w=logo_w)  # largeur fixe
+            pdf.image(LOGO_PATH, x=MARGIN_L, y=y, h=logo_h)
         except Exception:
             pass
 
-    # bloc coordonnées à droite du logo (x = marge + logo + espace)
-    x_text = MARGIN_L + logo_w + 8
+    # Bloc coordonnées à droite du logo
+    x_text = MARGIN_L + 40  # décalage sûr par rapport au logo
     pdf.set_xy(x_text, y)
     pdf.set_font("Helvetica", "", 11)
     for line in COMPANY_LINES[:6]:
@@ -433,7 +432,7 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     if len(COMPANY_LINES) > 6:
         pdf.cell(0, 4, _pdf_txt(COMPANY_LINES[6]), ln=1)
 
-    # ajoute un espace vertical franc pour éviter l'underline parasite
+    # espace pour respirer avant le cartouche
     pdf.ln(6)
 
     # ---------- CARTOUCHE 'BON DE LIVRAISON' ----------
@@ -446,7 +445,7 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     pdf.set_xy(box_x + 3, box_y + 3)
     pdf.cell(0, 6, _pdf_txt("BON DE LIVRAISON"), ln=1)
 
-    # colonne gauche
+    # Colonne gauche
     pdf.set_font("Helvetica", "", 10)
     LBL_W = 46
     pdf.set_xy(box_x + 3, box_y + 12)
@@ -457,8 +456,8 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     pdf.cell(LBL_W, 6, _pdf_txt("DATE DE RAMMASSE :"), ln=0)  # conforme au modèle
     pdf.cell(35, 6, _pdf_txt(date_ramasse.strftime("%d/%m/%Y")), ln=1)
 
-    # colonne droite (destinataire)
-    right_x = box_x + 95  # point de départ visuel proche du milieu
+    # Colonne droite (destinataire)
+    right_x = box_x + 95
     pdf.set_xy(right_x, box_y + 12)
     pdf.cell(32, 6, _pdf_txt("DESTINATAIRE :"), ln=1)
     pdf.set_xy(right_x, box_y + 18)
@@ -469,13 +468,13 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
         pdf.set_xy(right_x, box_y + 24 + i * 6)
         pdf.cell(0, 6, _pdf_txt(l), ln=1)
 
-    # place le curseur SOUS la boîte + marge de respiration
+    # Place le curseur SOUS la boîte + marge
     pdf.set_y(box_y + box_h + 8)
 
     # ---------- TABLEAU ----------
-    # Largeurs calibrées sur 186 mm (≈ rendu de ton modèle)
-    # 25 + 85 + 20 + 18 + 18 + 20 = 186
-    col_w = [25, 85, 20, 18, 18, 20]
+    # Largeurs (somme = 186 mm)
+    # Réf / Produit / DDM / Qté cartons / Qté palettes / Poids palettes
+    col_w = [25, 80, 25, 18, 18, 20]
     headers = [
         "Référence",
         "Produit",
@@ -505,7 +504,7 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
             pdf.cell(w, LINE_H, str(txt), border=1, align=a)
         pdf.ln(LINE_H)
 
-    # ligne TOTAL
+    # Ligne TOTAL
     pdf.set_font("Helvetica", "B", 10)
     total_label_w = col_w[0] + col_w[1] + col_w[2]
     pdf.cell(total_label_w, LINE_H, _pdf_txt("TOTAL"), border=1, align="R")
@@ -513,8 +512,8 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     pdf.cell(col_w[4], LINE_H, _pdf_txt(totals["palettes"]), border=1, align="C")
     pdf.cell(col_w[5], LINE_H, _pdf_txt(totals["poids"]), border=1, align="C")
 
-    # ---------- sortie binaire (toujours bytes) ----------
-    buf = pdf.output(dest="S")
+    # ---------- Sortie binaire robuste ----------
+    buf = pdf.output(dest="S")  # fpdf2 : str / bytes / bytearray selon version
     if isinstance(buf, str):
         data = buf.encode("latin-1", "ignore")
     elif isinstance(buf, bytearray):
