@@ -1,6 +1,8 @@
 # pages/03_Fiche_de_ramasse.py
 from __future__ import annotations
-import os, re, math, datetime as dt
+import os
+import re
+import datetime as dt
 import pandas as pd
 import streamlit as st
 from dateutil.tz import gettz
@@ -8,14 +10,13 @@ from fpdf import FPDF
 
 from common.design import apply_theme, section, kpi
 
-# Référence désormais en CSV (dans assets/)
+# Chemin de la table de référence (remplace l'ancien PDF)
 REF_CSV_PATH = "assets/info_FDR.csv"
 
 # ---------------- Constantes ----------------
-PALLETS_RULES = {"12x33": 108, "6x75": 84, "4x75": 100}  # non utilisé par défaut (palettes éditables)
-BTL_PER_CARTON = {"12x33": 12, "6x75": 6, "4x75": 4}     # calcul interne (non affiché)
+BTL_PER_CARTON = {"12x33": 12, "6x75": 6, "4x75": 4}  # calcul interne (non affiché)
 
-# Fallbacks si une ligne de référence n’est pas trouvée
+# Fallbacks si une ligne n’est pas trouvée (utilisés en dernier recours)
 FALLBACK_REF = {"12x33": "12", "6x75": "3383", "4x75": "3382"}
 FALLBACK_POIDS_CARTON = {"12x33": 7.56, "6x75": 7.23, "4x75": 4.68}
 
@@ -27,6 +28,11 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()
 
 def _canon_gout(name: str) -> str:
+    """
+    Canonise un libellé pour matcher entre prod et CSV:
+    - enlève préfixes (kéfir, infusion probiotique, water kefir, probiotic water, niko - ...)
+    - normalise quelques variantes (citron-vert -> citron vert, peche -> pêche, etc.)
+    """
     s = _norm(name).lower()
     s = re.sub(r"niko\s*-\s*", "", s)
     s = re.sub(r"k[ée]fir(\s+de\s+fruits)?\s*", "", s)
@@ -54,6 +60,9 @@ def _canon_gout(name: str) -> str:
     return s
 
 def _format_from_stock(stock_txt: str) -> str | None:
+    """
+    Détecte 12x33 / 6x75 / 4x75 depuis la colonne Stock du tableau de prod.
+    """
     if not stock_txt:
         return None
     s = str(stock_txt).lower().replace("×", "x").replace(",", ".").replace("\u00a0", " ")
@@ -71,12 +80,15 @@ def _format_from_stock(stock_txt: str) -> str | None:
     if m:
         nb = int(m.group(1))
 
-    if vol == 33 and nb == 12: return "12x33"
-    if vol == 75 and nb == 6:  return "6x75"
-    if vol == 75 and nb == 4:  return "4x75"
+    if vol == 33 and nb == 12:
+        return "12x33"
+    if vol == 75 and nb == 6:
+        return "6x75"
+    if vol == 75 and nb == 4:
+        return "4x75"
     return None
 
-# --------- NOUVEAUX helpers pour le CSV ----------
+# --------- Helpers pour lire le CSV ----------
 def _fmt_norm(s: str) -> str | None:
     """Normalise '12x33cl', '6x75 cl', 'Pack de 4 x 75cl' -> '12x33' / '6x75' / '4x75'."""
     if not s:
@@ -85,14 +97,20 @@ def _fmt_norm(s: str) -> str | None:
     t = re.sub(r"\s+", "", t)
     m = re.match(r"(\d+)\s*x\s*(\d+)\s*c?l", t)
     if m:
-        nb = int(m.group(1)); vol = int(float(m.group(2)))
-        if vol == 33 and nb == 12: return "12x33"
-        if vol == 75 and nb in (6, 4): return f"{nb}x75"
+        nb = int(m.group(1))
+        vol = int(float(m.group(2)))
+        if vol == 33 and nb == 12:
+            return "12x33"
+        if vol == 75 and nb in (6, 4):
+            return f"{nb}x75"
     if ("75cl" in t) or ("0.75l" in t):
-        if re.search(r"\b4x\b|de4|packde4", t): return "4x75"
-        if re.search(r"\b6x\b|de6|cartonde6", t): return "6x75"
+        if re.search(r"\b4x\b|de4|packde4", t):
+            return "4x75"
+        if re.search(r"\b6x\b|de6|cartonde6", t):
+            return "6x75"
     if ("33cl" in t) or ("0.33l" in t):
-        if re.search(r"\b12x\b|de12|cartonde12", t): return "12x33"
+        if re.search(r"\b12x\b|de12|cartonde12", t):
+            return "12x33"
     return None
 
 def _ref_from_codebarre(code: str) -> str:
@@ -102,22 +120,14 @@ def _ref_from_codebarre(code: str) -> str:
     digits = re.sub(r"\D", "", str(code))
     return digits[-6:] if len(digits) >= 6 else ""
 
-
-def _extract_ref_from_designation(s: str) -> str:
-    """Récupère le code entre parenthèses dans la désignation, ex: '(3383)' -> '3383'."""
-    if not s:
-        return ""
-    m = re.search(r"\(([\dA-Za-z\-\?]+)\)", str(s))
-    return m.group(1) if m else ""
-
 def _parse_reference_csv(csv_path: str) -> pd.DataFrame:
     """
-    Lit assets/info_FDR.csv et renvoie un DataFrame avec colonnes:
-    ['canon','format','poids_carton_kg','code_barre']
-    - canon = goût canonisé (via Désignation ou Produit)
-    - format = '12x33' / '6x75' / '4x75'
-    - poids_carton_kg = float (7.23, 7.56, 4.68, ...)
-    - code_barre = str (peut contenir 13+ chiffres)
+    Lit assets/info_FDR.csv et renvoie un DataFrame:
+    colonnes -> ['canon','format','poids_carton_kg','code_barre']
+    - 'canon'   : goût canonisé
+    - 'format'  : '12x33' / '6x75' / '4x75'
+    - 'poids_carton_kg' : Poids du carton (float)
+    - 'code_barre' : EAN (str chiffrée)
     """
     rows = []
     if os.path.exists(csv_path):
@@ -127,16 +137,15 @@ def _parse_reference_csv(csv_path: str) -> pd.DataFrame:
             df = pd.read_csv(csv_path, encoding="utf-8", sep=";")
 
         lower = {c.lower(): c for c in df.columns}
-        col_prod   = lower.get("produit")
-        col_fmt    = lower.get("format")
-        col_des    = lower.get("désignation") or lower.get("designation")
-        col_poids  = lower.get("poids")
-        col_ean    = (lower.get("code-barre") or lower.get("codebarre")
-                      or lower.get("code barre") or lower.get("ean"))
+        col_prod  = lower.get("produit")
+        col_fmt   = lower.get("format")
+        col_des   = lower.get("désignation") or lower.get("designation")
+        col_poids = lower.get("poids")
+        col_ean   = lower.get("code-barre") or lower.get("codebarre") or lower.get("code barre") or lower.get("ean")
 
         for _, r in df.iterrows():
             prod = str(r.get(col_prod, "") or "")
-            des  = str(r.get(col_des, "") or "")
+            des = str(r.get(col_des, "") or "")
             fmt1 = _fmt_norm(r.get(col_fmt, "")) or _fmt_norm(des) or _fmt_norm(prod)
             if not fmt1:
                 continue
@@ -153,39 +162,45 @@ def _parse_reference_csv(csv_path: str) -> pd.DataFrame:
             except Exception:
                 poids = None
 
-            # Code-barre (on stocke brut; la ref = 6 derniers chiffres sera dérivée plus tard)
+            # Code-barre
             ean_raw = r.get(col_ean, "")
             code_barre = re.sub(r"\D", "", str(ean_raw)) if pd.notna(ean_raw) else ""
 
             canon = _canon_gout(des or prod)
-            rows.append({
-                "canon": canon,
-                "format": fmt1,
-                "poids_carton_kg": poids,
-                "code_barre": code_barre,
-            })
+            rows.append(
+                {
+                    "canon": canon,
+                    "format": fmt1,
+                    "poids_carton_kg": poids,
+                    "code_barre": code_barre,
+                }
+            )
 
     df_out = pd.DataFrame(rows)
     if df_out.empty:
-        # secours minimal, au cas où le CSV manque
+        # Fallback minimal
         fallback = [
-            ("mangue passion", "12x33", 7.56, ""), ("gingembre", "12x33", 7.56, ""),
-            ("pamplemousse","12x33", 7.56, ""), ("menthe citron vert","12x33", 7.56, ""),
-            ("original","12x33", 7.56, ""), ("mangue passion","6x75", 7.23, ""),
-            ("gingembre","6x75", 7.23, ""), ("pamplemousse","6x75", 7.23, ""),
-            ("menthe citron vert","6x75", 7.23, ""), ("mangue passion","4x75", 4.68, ""),
-            ("gingembre","4x75", 4.68, ""), ("pamplemousse","4x75", 4.68, ""),
-            ("menthe citron vert","4x75", 4.68, ""),
+            ("mangue passion", "12x33", 7.56, ""),
+            ("gingembre", "12x33", 7.56, ""),
+            ("pamplemousse", "12x33", 7.56, ""),
+            ("menthe citron vert", "12x33", 7.56, ""),
+            ("original", "12x33", 7.56, ""),
+            ("mangue passion", "6x75", 7.23, ""),
+            ("gingembre", "6x75", 7.23, ""),
+            ("pamplemousse", "6x75", 7.23, ""),
+            ("menthe citron vert", "6x75", 7.23, ""),
+            ("mangue passion", "4x75", 4.68, ""),
+            ("gingembre", "4x75", 4.68, ""),
+            ("pamplemousse", "4x75", 4.68, ""),
+            ("menthe citron vert", "4x75", 4.68, ""),
         ]
-        df_out = pd.DataFrame(fallback, columns=["canon","format","poids_carton_kg","code_barre"])
+        df_out = pd.DataFrame(fallback, columns=["canon", "format", "poids_carton_kg", "code_barre"])
 
-    df_out = df_out.dropna(subset=["canon","format"]).copy()
+    df_out = df_out.dropna(subset=["canon", "format"]).copy()
     df_out["canon"] = df_out["canon"].astype(str).str.strip().str.lower()
     df_out["format"] = df_out["format"].astype(str).str.strip()
-    # garde une seule ligne par (canon, format)
-    df_out = df_out.drop_duplicates(subset=["canon","format"], keep="first").reset_index(drop=True)
+    df_out = df_out.drop_duplicates(subset=["canon", "format"], keep="first").reset_index(drop=True)
     return df_out
-
 
 # =========================================================
 #                           UI
@@ -214,12 +229,7 @@ for _, r in df_min_saved.iterrows():
     if key in seen:
         continue
     seen.add(key)
-    opts_rows.append({
-        "label": f"{gout} — {fmt}",
-        "gout": gout,
-        "gout_key": _canon_gout(gout),
-        "format": fmt,
-    })
+    opts_rows.append({"label": f"{gout} — {fmt}", "gout": gout, "gout_key": _canon_gout(gout), "format": fmt})
 
 if not opts_rows:
     st.error("Impossible de détecter les **formats** (12x33, 6x75, 4x75) dans le tableau de production sauvegardé.")
@@ -255,34 +265,43 @@ meta_by_label = {}
 rows = []
 for lab in selection_labels:
     row = opts_df.loc[opts_df["label"] == lab].iloc[0]
-    canon = row["gout_key"]; fmt = row["format"]
+    canon = row["gout_key"]
+    fmt = row["format"]
+
     m = ref_map[(ref_map["canon"] == canon) & (ref_map["format"] == fmt)]
-    
-    # 1) Poids carton depuis CSV
+
+    # 1) Poids carton depuis CSV (sinon fallback)
     if not m.empty and pd.notna(m["poids_carton_kg"].iloc[0]):
         poids_carton = float(m["poids_carton_kg"].iloc[0])
     else:
         poids_carton = float(FALLBACK_POIDS_CARTON.get(fmt, 0.0))
-    
-    # 2) Référence = 6 derniers chiffres du Code-barre
+
+    # 2) Référence = 6 derniers chiffres du Code-barre (sinon fallback)
     codeb = str(m["code_barre"].iloc[0]) if (not m.empty and "code_barre" in m.columns) else ""
     ref6 = _ref_from_codebarre(codeb)
     ref = ref6 if ref6 else FALLBACK_REF.get(fmt, "")
 
-        ref = FALLBACK_REF.get(fmt, "")
-
     meta_by_label[lab] = {"_format": fmt, "_poids_carton": poids_carton, "_reference": ref}
 
-    rows.append({
-        "Référence": ref,
-        "Produit (goût + format)": lab,
-        "DDM": ddm_saved.strftime("%d/%m/%Y"),
-        "Quantité cartons": 0,
-        "Quantité palettes": 0,         # EDITABLE manuellement
-        "Poids palettes (kg)": 0,       # calculé
-    })
+    rows.append(
+        {
+            "Référence": ref,
+            "Produit (goût + format)": lab,
+            "DDM": ddm_saved.strftime("%d/%m/%Y"),
+            "Quantité cartons": 0,
+            "Quantité palettes": 0,  # EDITABLE manuellement
+            "Poids palettes (kg)": 0,  # calculé
+        }
+    )
 
-display_cols = ["Référence","Produit (goût + format)","DDM","Quantité cartons","Quantité palettes","Poids palettes (kg)"]
+display_cols = [
+    "Référence",
+    "Produit (goût + format)",
+    "DDM",
+    "Quantité cartons",
+    "Quantité palettes",
+    "Poids palettes (kg)",
+]
 base_df = pd.DataFrame(rows, columns=display_cols)
 
 st.caption("Renseigne **Quantité cartons** et, si besoin, **Quantité palettes**. Le **poids** se calcule automatiquement.")
@@ -309,6 +328,7 @@ def _apply_calculs(df_disp: pd.DataFrame) -> pd.DataFrame:
         fmt = meta.get("_format", "")
         pc = float(meta.get("_poids_carton", 0.0))
         cartons = int(pd.to_numeric(r["Quantité cartons"], errors="coerce") or 0)
+        # poids total arrondi à l'entier
         poids.append(int(round(cartons * pc, 0)))
         bouteilles.append(cartons * BTL_PER_CARTON.get(fmt, 0))
     out["Poids palettes (kg)"] = poids
@@ -323,18 +343,17 @@ tot_palettes = int(pd.to_numeric(df_calc["Quantité palettes"], errors="coerce")
 tot_poids = int(pd.to_numeric(df_calc["Poids palettes (kg)"], errors="coerce").fillna(0).sum())
 
 c1, c2, c3 = st.columns(3)
-with c1: kpi("Total cartons", f"{tot_cartons:,}".replace(",", " "))
-with c2: kpi("Total palettes", f"{tot_palettes}")
-with c3: kpi("Poids total (kg)", f"{tot_poids:,}".replace(",", " "))
+with c1:
+    kpi("Total cartons", f"{tot_cartons:,}".replace(",", " "))
+with c2:
+    kpi("Total palettes", f"{tot_palettes}")
+with c3:
+    kpi("Poids total (kg)", f"{tot_poids:,}".replace(",", " "))
 
-st.dataframe(
-    df_calc[display_cols],
-    use_container_width=True, hide_index=True
-)
+st.dataframe(df_calc[display_cols], use_container_width=True, hide_index=True)
 
 # 7) Génération PDF
-def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
-                 df_lines: pd.DataFrame, totals: dict) -> bytes:
+def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date, df_lines: pd.DataFrame, totals: dict) -> bytes:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
@@ -346,11 +365,18 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     pdf.cell(0, 6, f"DATE DE RAMASSE : {date_ramasse.strftime('%d/%m/%Y')}", ln=1)
     pdf.ln(2)
 
-    headers = ["Référence","Produit (goût + format)","DDM","Quantité cartons","Quantité palettes","Poids palettes (kg)"]
-    widths  = [28, 86, 20, 28, 28, 28]
+    headers = [
+        "Référence",
+        "Produit (goût + format)",
+        "DDM",
+        "Quantité cartons",
+        "Quantité palettes",
+        "Poids palettes (kg)",
+    ]
+    widths = [28, 86, 20, 28, 28, 28]
 
     pdf.set_font("Helvetica", "B", 10)
-    for h,w in zip(headers, widths):
+    for h, w in zip(headers, widths):
         pdf.cell(w, 8, h, border=1, align="C")
     pdf.ln(8)
 
@@ -364,15 +390,15 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
             str(int(pd.to_numeric(r["Quantité palettes"], errors="coerce") or 0)),
             str(int(pd.to_numeric(r["Poids palettes (kg)"], errors="coerce") or 0)),
         ]
-        for i,(txt,w) in enumerate(zip(row, widths)):
+        for i, (txt, w) in enumerate(zip(row, widths)):
             pdf.cell(w, 8, txt, border=1, align="C" if i != 1 else "L")
         pdf.ln(8)
 
-    pdf.set_font("Helvetica","B",10)
-    pdf.cell(widths[0]+widths[1]+widths[2],8,"TOTAL",border=1, align="R")
-    pdf.cell(widths[3],8,str(totals["cartons"]),border=1,align="C")
-    pdf.cell(widths[4],8,str(totals["palettes"]),border=1,align="C")
-    pdf.cell(widths[5],8,str(totals["poids"]),border=1,align="C")
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(widths[0] + widths[1] + widths[2], 8, "TOTAL", border=1, align="R")
+    pdf.cell(widths[3], 8, str(totals["cartons"]), border=1, align="C")
+    pdf.cell(widths[4], 8, str(totals["palettes"]), border=1, align="C")
+    pdf.cell(widths[5], 8, str(totals["poids"]), border=1, align="C")
 
     return pdf.output(dest="S").encode("latin1")
 
@@ -382,7 +408,8 @@ if st.button("🧾 Générer la fiche de ramasse (PDF)", use_container_width=Tru
         st.error("Renseigne au moins une **Quantité cartons** > 0.")
     else:
         pdf_bytes = _pdf_ramasse(
-            _today_paris(), date_ramasse,
+            _today_paris(),
+            date_ramasse,
             df_calc[display_cols],
             {"cartons": tot_cartons, "palettes": tot_palettes, "poids": tot_poids},
         )
