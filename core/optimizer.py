@@ -4,6 +4,37 @@ from typing import Optional, List, Tuple
 import numpy as np
 import pandas as pd
 
+import unicodedata
+
+def _norm_colname(s: str) -> str:
+    s = str(s or "")
+    s = s.strip().lower()
+    # enlève accents
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+    # remplace tout le reste par des espaces
+    import re as _re
+    s = _re.sub(r"[^a-z0-9]+", " ", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _pick_column(df: pd.DataFrame, candidates_norm: list[str]) -> str | None:
+    """Retourne le vrai nom de colonne du df correspondant à une liste de candidats normalisés."""
+    norm_to_real = {_norm_colname(c): c for c in df.columns}
+    # match direct
+    for cand in candidates_norm:
+        if cand in norm_to_real:
+            return norm_to_real[cand]
+    # fuzzy (au cas où)
+    try:
+        import difflib
+        match = difflib.get_close_matches(candidates_norm[0], list(norm_to_real.keys()), n=1, cutoff=0.88)
+        if match:
+            return norm_to_real[match[0]]
+    except Exception:
+        pass
+    return None
+
+
 # ======= tes constantes
 ALLOWED_FORMATS = {(12, 0.33), (6, 0.75), (4, 0.75)}
 ROUND_TO_CARTON = True
@@ -130,8 +161,29 @@ def load_flavor_map_from_path(path_csv: str) -> pd.DataFrame:
 
 def apply_canonical_flavor(df: pd.DataFrame, fm: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    out["Produit"] = out["Produit"].astype(str).map(fix_text)
+
+    # 1) Trouve la colonne "Produit" même si le nom diffère (Désignation, Libellé, Product, etc.)
+    prod_candidates = [
+        "produit", "designation", "désignation", "libelle", "libellé",
+        "nom du produit", "product", "sku libelle", "sku libellé", "sku", "item"
+    ]
+    prod_candidates = [_norm_colname(x) for x in prod_candidates]
+    col_prod = _pick_column(out, prod_candidates)
+
+    if not col_prod:
+        # message clair si rien n'est trouvé
+        cols_list = ", ".join(map(str, out.columns))
+        raise KeyError(
+            "Colonne produit introuvable. "
+            "Renomme la colonne en 'Produit' ou 'Désignation' (ou équivalent). "
+            f"Colonnes détectées: {cols_list}"
+        )
+
+    # 2) Crée la colonne standard 'Produit'
+    out["Produit"] = out[col_prod].astype(str).map(fix_text)
     out["Produit_norm"] = out["Produit"].str.strip()
+
+    # 3) Mapping canonique (inchangé)
     if len(fm):
         fm = fm.dropna(subset=["name","canonical"]).copy()
         fm["name_norm"] = fm["name"].astype(str).map(fix_text).str.strip().str.lower()
@@ -151,8 +203,10 @@ def apply_canonical_flavor(df: pd.DataFrame, fm: pd.DataFrame) -> pd.DataFrame:
         out["GoutCanon"] = out["Produit_norm"].map(to_canonical)
     else:
         out["GoutCanon"] = out["Produit_norm"]
+
     out["GoutCanon"] = out["GoutCanon"].astype(str).map(fix_text).str.strip()
     return out
+
 
 # ======= parsing formats/stock & filtres
 def parse_stock(text: str):
