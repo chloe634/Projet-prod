@@ -412,7 +412,17 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     pdf.cell(widths[4],8,_pdf_txt(totals["palettes"]),border=1,align="C")
     pdf.cell(widths[5],8,_pdf_txt(totals["poids"]),border=1,align="C")
 
-    return pdf.output(dest="S")
+        # --- à la place de: return pdf.output(dest="S") ---
+    buf = pdf.output(dest="S")  # fpdf2 peut renvoyer str, bytes ou bytearray selon la version
+    if isinstance(buf, str):
+        data = buf.encode("latin-1", "ignore")  # garantit bytes
+    elif isinstance(buf, bytearray):
+        data = bytes(buf)
+    else:
+        data = buf  # déjà bytes
+
+    return data
+
 
 
 st.markdown("---")
