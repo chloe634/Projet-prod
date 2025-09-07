@@ -8,14 +8,14 @@ from fpdf import FPDF
 
 from common.design import apply_theme, section, kpi
 
-# PDF de référence placé dans /assets
-REF_PDF_PATH = "assets/LOG_EN_001_01 BL enlèvements Sofripa-2.pdf"
+# Référence désormais en CSV (dans assets/)
+REF_CSV_PATH = "assets/info_FDR.csv"
 
 # ---------------- Constantes ----------------
 PALLETS_RULES = {"12x33": 108, "6x75": 84, "4x75": 100}  # non utilisé par défaut (palettes éditables)
 BTL_PER_CARTON = {"12x33": 12, "6x75": 6, "4x75": 4}     # calcul interne (non affiché)
 
-# Fallbacks si une ligne du PDF n’est pas trouvée (valeurs usuelles)
+# Fallbacks si une ligne de référence n’est pas trouvée
 FALLBACK_REF = {"12x33": "12", "6x75": "3383", "4x75": "3382"}
 FALLBACK_POIDS_CARTON = {"12x33": 7.56, "6x75": 7.23, "4x75": 4.68}
 
@@ -27,11 +27,6 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()
 
 def _canon_gout(name: str) -> str:
-    """
-    Normalise un libellé goût pour matcher entre la prod et le PDF:
-    - enlève préfixes (kéfir, kefir, water kefir, infusion probiotique, probiotic water, niko - ...)
-    - garde le coeur (mangue passion, gingembre, pamplemousse, menthe citron vert, original, mélisse, menthe poivrée, zest d'agrumes, pêche, ...)
-    """
     s = _norm(name).lower()
     s = re.sub(r"niko\s*-\s*", "", s)
     s = re.sub(r"k[ée]fir(\s+de\s+fruits)?\s*", "", s)
@@ -42,7 +37,6 @@ def _canon_gout(name: str) -> str:
     s = s.replace("zest d", "zeste d")
     s = s.replace("peche", "pêche")
 
-    # Canon par mots-clés
     KEYWORDS = [
         ("mangue passion", ["mangue", "passion"]),
         ("gingembre", ["gingembre"]),
@@ -57,28 +51,19 @@ def _canon_gout(name: str) -> str:
     for canon, tokens in KEYWORDS:
         if all(t in s for t in tokens):
             return canon
-    # fallback: renvoie la chaîne nettoyée
     return s
 
-# ---------------- Détection format depuis "Stock" ----------------
 def _format_from_stock(stock_txt: str) -> str | None:
-    """
-    Détecte 12x33 / 6x75 / 4x75 dans des libellés libres :
-    ex. 'Carton de 12 Bouteilles - 0.33L', 'Carton de 6 Bouteilles 75cl Verralia - 0.75L',
-        'Pack de 4 Bouteilles 75cl SAFT - 0.75L', etc.
-    """
     if not stock_txt:
         return None
     s = str(stock_txt).lower().replace("×", "x").replace(",", ".").replace("\u00a0", " ")
 
-    # volume -> 33 / 75
     vol = None
     if "0.33l" in s or "0.33 l" in s or re.search(r"33\s*c?l", s):
         vol = 33
     elif "0.75l" in s or "0.75 l" in s or re.search(r"75\s*c?l", s):
         vol = 75
 
-    # nb bouteilles
     nb = None
     m = re.search(r"(?:carton|pack)\s*de\s*(12|6|4)\b", s)
     if not m:
@@ -91,68 +76,106 @@ def _format_from_stock(stock_txt: str) -> str | None:
     if vol == 75 and nb == 4:  return "4x75"
     return None
 
-# ---------------- Lecture PDF Sofripa → ref & poids/carton ----------------
-def _parse_reference_pdf(pdf_path: str) -> pd.DataFrame:
+# --------- NOUVEAUX helpers pour le CSV ----------
+def _fmt_norm(s: str) -> str | None:
+    """Normalise '12x33cl', '6x75 cl', 'Pack de 4 x 75cl' -> '12x33' / '6x75' / '4x75'."""
+    if not s:
+        return None
+    t = str(s).lower().replace("×", "x")
+    t = re.sub(r"\s+", "", t)
+    m = re.match(r"(\d+)\s*x\s*(\d+)\s*c?l", t)
+    if m:
+        nb = int(m.group(1)); vol = int(float(m.group(2)))
+        if vol == 33 and nb == 12: return "12x33"
+        if vol == 75 and nb in (6, 4): return f"{nb}x75"
+    if ("75cl" in t) or ("0.75l" in t):
+        if re.search(r"\b4x\b|de4|packde4", t): return "4x75"
+        if re.search(r"\b6x\b|de6|cartonde6", t): return "6x75"
+    if ("33cl" in t) or ("0.33l" in t):
+        if re.search(r"\b12x\b|de12|cartonde12", t): return "12x33"
+    return None
+
+def _extract_ref_from_designation(s: str) -> str:
+    """Récupère le code entre parenthèses dans la désignation, ex: '(3383)' -> '3383'."""
+    if not s:
+        return ""
+    m = re.search(r"\(([\dA-Za-z\-\?]+)\)", str(s))
+    return m.group(1) if m else ""
+
+def _parse_reference_csv(csv_path: str) -> pd.DataFrame:
     """
-    DataFrame colonnes: canon (goût canonisé), format, reference, poids_carton_kg
+    Lit assets/info_FDR.csv et renvoie un DataFrame:
+    colonnes -> ['canon','format','reference','poids_carton_kg']
     """
     rows = []
-    if os.path.exists(pdf_path):
+    if os.path.exists(csv_path):
         try:
-            import pdfplumber
-            with pdfplumber.open(pdf_path) as pdf:
-                for page in pdf.pages:
-                    txt = page.extract_text() or ""
-                    for line in txt.splitlines():
-                        l = _norm(line)
-                        # format
-                        fmt = None
-                        if re.search(r"\b12\s*x?\s*33", l, re.I): fmt = "12x33"
-                        elif re.search(r"\b6\s*x?\s*75", l, re.I): fmt = "6x75"
-                        elif re.search(r"\b4\s*x?\s*75", l, re.I): fmt = "4x75"
-                        if not fmt:
-                            continue
-                        # ref = parenthèses si présent
-                        m_ref = re.search(r"\(([\dA-Za-z\-]+)\)", l)
-                        ref = m_ref.group(1) if m_ref else ""
-                        # poids = dernier nombre en fin de ligne
-                        m_w = re.findall(r"(\d+(?:[.,]\d+)?)\s*$", l)
-                        poids = float(m_w[-1].replace(",", ".")) if m_w else None
-                        # goût canonisé
-                        canon = _canon_gout(l)
-                        rows.append({"canon": canon, "format": fmt, "reference": ref, "poids_carton_kg": poids})
+            df = pd.read_csv(csv_path, encoding="utf-8", sep=",")
         except Exception:
-            pass
+            df = pd.read_csv(csv_path, encoding="utf-8", sep=";")
 
-    df = pd.DataFrame(rows)
-    if df.empty:
-        # Fallback minimal si extraction impossible
+        lower = {c.lower(): c for c in df.columns}
+        col_prod   = lower.get("produit")
+        col_fmt    = lower.get("format")
+        col_des    = lower.get("désignation") or lower.get("designation")
+        col_poids  = lower.get("poids")
+
+        for _, r in df.iterrows():
+            prod = str(r.get(col_prod, "") or "")
+            des  = str(r.get(col_des, "") or "")
+            fmt1 = _fmt_norm(r.get(col_fmt, "")) or _fmt_norm(des) or _fmt_norm(prod)
+
+            ref  = _extract_ref_from_designation(des)
+            poids = r.get(col_poids, None)
+            try:
+                if isinstance(poids, str):
+                    poids = float(poids.replace(",", "."))
+                else:
+                    poids = float(poids) if pd.notna(poids) else None
+            except Exception:
+                poids = None
+
+            canon = _canon_gout(des or prod)
+
+            if fmt1 and canon:
+                rows.append({
+                    "canon": canon,
+                    "format": fmt1,
+                    "reference": ref or "",
+                    "poids_carton_kg": poids
+                })
+
+    df_out = pd.DataFrame(rows)
+    if df_out.empty:
         fallback = [
-            ("mangue passion", "12x33", "12", 7.56),
-            ("gingembre", "12x33", "12", 7.56),
-            ("pamplemousse", "12x33", "12", 7.56),
-            ("menthe citron vert", "12x33", "12", 7.56),
-            ("original", "12x33", "12", 7.56),
-            ("mangue passion", "6x75", "3383", 7.23),
-            ("gingembre", "6x75", "3383", 7.23),
-            ("pamplemousse", "6x75", "3383", 7.23),
-            ("menthe citron vert", "6x75", "3383", 7.23),
-            ("mangue passion", "4x75", "3382", 4.68),
-            ("gingembre", "4x75", "3382", 4.68),
-            ("pamplemousse", "4x75", "3382", 4.68),
-            ("menthe citron vert", "4x75", "3382", 4.68),
+            ("mangue passion", "12x33", "12",   7.56),
+            ("gingembre",      "12x33", "12",   7.56),
+            ("pamplemousse",   "12x33", "12",   7.56),
+            ("menthe citron vert","12x33","12", 7.56),
+            ("original",       "12x33", "12",   7.56),
+            ("mangue passion", "6x75",  "3383", 7.23),
+            ("gingembre",      "6x75",  "3383", 7.23),
+            ("pamplemousse",   "6x75",  "3383", 7.23),
+            ("menthe citron vert","6x75","3383",7.23),
+            ("mangue passion", "4x75",  "3382", 4.68),
+            ("gingembre",      "4x75",  "3382", 4.68),
+            ("pamplemousse",   "4x75",  "3382", 4.68),
+            ("menthe citron vert","4x75","3382",4.68),
         ]
-        df = pd.DataFrame(fallback, columns=["canon","format","reference","poids_carton_kg"])
+        df_out = pd.DataFrame(fallback, columns=["canon","format","reference","poids_carton_kg"])
 
-    # dédoublonne proprement
-    df = df.drop_duplicates(subset=["canon","format"])
-    return df
+    df_out = df_out.dropna(subset=["canon","format"]).copy()
+    df_out["canon"] = df_out["canon"].astype(str).str.strip().str.lower()
+    df_out["format"] = df_out["format"].astype(str).str.strip()
+    df_out = df_out.drop_duplicates(subset=["canon","format"], keep="first").reset_index(drop=True)
+    return df_out
 
 # =========================================================
 #                           UI
 # =========================================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
 section("Fiche de ramasse", "🚚")
+st.caption("Références & poids chargés depuis assets/info_FDR.csv")
 
 # Besoin de la production sauvegardée
 if "saved_production" not in st.session_state or "df_min" not in st.session_state["saved_production"]:
@@ -168,7 +191,7 @@ opts_rows, seen = [], set()
 for _, r in df_min_saved.iterrows():
     gout = str(r.get("GoutCanon") or "").strip()
     fmt = _format_from_stock(r.get("Stock"))
-    if not (gout and fmt): 
+    if not (gout and fmt):
         continue
     key = (gout.lower(), fmt)
     if key in seen:
@@ -187,8 +210,8 @@ if not opts_rows:
 
 opts_df = pd.DataFrame(opts_rows).sort_values(by="label").reset_index(drop=True)
 
-# 2) Mapping PDF (référence + poids/carton)
-ref_map = _parse_reference_pdf(REF_PDF_PATH)
+# 2) Mapping CSV (référence + poids/carton)
+ref_map = _parse_reference_csv(REF_CSV_PATH)
 
 # 3) Sidebar : dates
 with st.sidebar:
@@ -203,7 +226,7 @@ st.subheader("Sélection des produits")
 selection_labels = st.multiselect(
     "Produits à inclure (Goût — Format)",
     options=opts_df["label"].tolist(),
-    default=opts_df["label"].tolist(),  # propose tout par défaut
+    default=opts_df["label"].tolist(),
 )
 
 if not selection_labels:
@@ -211,7 +234,6 @@ if not selection_labels:
     st.stop()
 
 # 5) Base table (sans colonnes internes visibles)
-#    On garde les métadonnées dans un dict séparé (format, poids, ref)
 meta_by_label = {}
 rows = []
 for lab in selection_labels:
