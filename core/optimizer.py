@@ -18,16 +18,35 @@ def _norm_colname(s: str) -> str:
     return s
 
 def _pick_column(df: pd.DataFrame, candidates_norm: list[str]) -> str | None:
-    """Retourne le vrai nom de colonne du df correspondant à une liste de candidats normalisés."""
+    """
+    Retourne le vrai nom de colonne du df correspondant à des candidats "normalisés".
+    Amélioré : accepte 'produit 1', 'produit_2', etc. + correspondances partielles.
+    """
     norm_to_real = {_norm_colname(c): c for c in df.columns}
-    # match direct
+    norms = list(norm_to_real.keys())
+
+    # 1) match exact (priorité)
     for cand in candidates_norm:
         if cand in norm_to_real:
             return norm_to_real[cand]
-    # fuzzy (au cas où)
+
+    # 2) startswith sur les mots-clés importants (ex: 'produit' → 'produit 1')
+    KEY_PREFIXES = ["produit", "designation", "desigation", "des", "libelle", "libelle", "product", "item", "sku"]
+    for key in KEY_PREFIXES:
+        for n in norms:
+            if n.startswith(key):
+                return norm_to_real[n]
+
+    # 3) contains (au cas où un préfixe/ suffixe se glisse)
+    for key in KEY_PREFIXES:
+        for n in norms:
+            if key in n:
+                return norm_to_real[n]
+
+    # 4) fuzzy (secours)
     try:
         import difflib
-        match = difflib.get_close_matches(candidates_norm[0], list(norm_to_real.keys()), n=1, cutoff=0.88)
+        match = difflib.get_close_matches(candidates_norm[0], norms, n=1, cutoff=0.85)
         if match:
             return norm_to_real[match[0]]
     except Exception:
@@ -164,11 +183,13 @@ def apply_canonical_flavor(df: pd.DataFrame, fm: pd.DataFrame) -> pd.DataFrame:
 
     # 1) Trouve la colonne "Produit" même si le nom diffère (Désignation, Libellé, Product, etc.)
     prod_candidates = [
-        "produit", "designation", "désignation", "libelle", "libellé",
-        "nom du produit", "product", "sku libelle", "sku libellé", "sku", "item"
+    "produit", "produit 1", "produit1", "produit 2",  # tolère 'Produit 1/2'
+    "designation", "désignation", "libelle", "libellé",
+    "nom du produit", "product", "sku libelle", "sku libellé", "sku", "item"
     ]
     prod_candidates = [_norm_colname(x) for x in prod_candidates]
     col_prod = _pick_column(out, prod_candidates)
+
 
     if not col_prod:
         # message clair si rien n'est trouvé
