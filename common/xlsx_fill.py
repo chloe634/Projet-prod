@@ -543,14 +543,14 @@ def build_bl_enlevements_pdf(
     pdf.ln(6)
     pdf.set_fill_color(230, 230, 230)
 
-    headers = [
-        "Référence",
-        "Produit",
-        "DDM",
-        "Quantité cartons",
-        "Quantité palettes",
-        "Poids palettes (kg)",
-    ]
+headers = [
+    "Référence",
+    "Produit",
+    "DDM",
+    "N° cartons",
+    "N° palettes",
+    "Poids (kg)",
+]
 
     # Largeurs (somme 180) — Référence & DDM élargies
     widths_base = [30, 66, 26, 24, 22, 12]
