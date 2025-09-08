@@ -307,22 +307,20 @@ if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_containe
         except Exception as e:
             st.error(f"Erreur lors du remplissage du modèle Excel : {e}")
 
-# 7-bis) Téléchargement PDF (rendu propre via fpdf2)
+# 7-bis) Téléchargement PDF (rendu style Excel via fpdf2)
 if st.button("🧾 Télécharger la version PDF", use_container_width=True):
     if tot_cartons <= 0:
         st.error("Renseigne au moins une **Quantité cartons** > 0.")
     else:
         try:
-            # <<< C’EST ICI que va ton appel >>>
             pdf_bytes = build_bl_enlevements_pdf(
                 date_creation=_today_paris(),
                 date_ramasse=date_ramasse,
                 destinataire_title=DEST_TITLE,
                 destinataire_lines=DEST_LINES,
                 df_lines=df_calc[display_cols],
-                col2_header=DEST_LINES[-1] if DEST_LINES else "Produit",  # <- en-tête 2
+                # pas de col2_header ici → la colonne s'appelle "Produit"
             )
-
             fname_pdf = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.pdf"
             st.download_button(
                 "⬇️ Télécharger le PDF",
