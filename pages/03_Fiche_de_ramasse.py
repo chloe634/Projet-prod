@@ -9,6 +9,7 @@ from dateutil.tz import gettz
 from fpdf import FPDF
 
 from common.design import apply_theme, section, kpi
+from common.xlsx_fill import fill_bl_enlevements_xlsx
 
 
 # ---- Modèle PDF (vierge) exporté depuis Excel ----
@@ -666,24 +667,45 @@ def _pdf_ramasse(date_creation: dt.date, date_ramasse: dt.date,
     return data
 
 
-
-
+# 7) Génération de la fiche (XLSX ou PDF optionnel)
 st.markdown("---")
-if st.button("🧾 Générer la fiche de ramasse (PDF)", use_container_width=True, type="primary"):
-    if tot_cartons <= 0:
-        st.error("Renseigne au moins une **Quantité cartons** > 0.")
-    else:
-        pdf_bytes = _pdf_ramasse(
-            _today_paris(),
-            date_ramasse,
+col_a, col_b = st.columns([1,1])
+
+with col_a:
+    if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_container_width=True):
+        try:
+            xlsx_bytes = fill_bl_enlevements_xlsx(
+                template_path="assets/LOG_EN_001_01 BL enlèvements Sofripa-2.xlsx",
+                date_creation=_today_paris(),
+                date_ramasse=date_ramasse,
+                destinataire_title=DEST_TITLE,
+                destinataire_lines=DEST_LINES,
+                df_lines=df_calc[display_cols],
+            )
+            fname = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.xlsx"
+            st.download_button(
+                "⬇️ Télécharger le XLSX",
+                data=xlsx_bytes,
+                file_name=fname,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception as e:
+            st.error(f"Erreur lors du remplissage du modèle Excel : {e}")
+
+with col_b:
+    if st.button("🧾 (Option) Générer un PDF depuis l’app", use_container_width=True):
+        # OPTION : conserve ton overlay PDF actuel si tu veux un PDF depuis l’app,
+        # mais l’XLSX reste la source fidèle au modèle.
+        pdf_bytes = _pdf_ramasse_from_template(
+            _today_paris(), date_ramasse,
             df_calc[display_cols],
             {"cartons": tot_cartons, "palettes": tot_palettes, "poids": tot_poids},
         )
-        fname = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.pdf"
         st.download_button(
-            "📥 Télécharger le PDF",
+            "⬇️ Télécharger le PDF (option)",
             data=pdf_bytes,
-            file_name=fname,
+            file_name=f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
