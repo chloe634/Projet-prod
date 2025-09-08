@@ -532,57 +532,69 @@ def build_bl_enlevements_pdf(
     # ⚠️ On SUPPRIME la ligne centrée sous l'encadré (celle qui affichait "ZAC du Haut de Wissous II,")
     # (rien ici)
 
-    # ---- Tableau
-    pdf.ln(6)
-    pdf.set_fill_color(230,230,230)
+   # ---- Tableau
+pdf.ln(6)
+pdf.set_fill_color(230, 230, 230)
 
-    headers = [
-        "Référence",
-        "Produit",
-        "DDM",
-        "Quantité cartons",
-        "Quantité palettes",
-        "Poids palettes (kg)",
-    ]
+headers = [
+    "Référence",
+    "Produit",
+    "DDM",
+    "Quantité cartons",
+    "Quantité palettes",
+    "Poids palettes (kg)",
+]
 
-    # Largeurs de base (somme = 180 mm)
-    widths  = [22, 72, 18, 24, 24, 20]
-    header_h = 8
-    line_h   = 6
+# Base widths (somme = 180). Référence et DDM élargies d’emblée.
+widths_base = [30, 66, 26, 24, 22, 12]   # [Ref, Produit, DDM, QtéC, QtéP, Poids]
+widths = widths_base[:]                  # copie
+header_h = 8
+line_h = 6
 
-    # --- Ajustement AUTO pour que chaque titre tienne sur 1 ligne ---
-    pdf.set_font("Helvetica","B",10)
-    extra_needed = 0.0
-    margin_mm = 2.5  # petite marge dans les cellules
-    # On ajuste toutes sauf la colonne Produit (index 1) ; on "vole" sa largeur
-    for j, h in enumerate(headers):
-        if j == 1:  # Produit
-            continue
-        need = pdf.get_string_width(_txt(h)) + 2*margin_mm
-        if need > widths[j]:
-            extra_needed += (need - widths[j])
-            widths[j] = need
-    # On retire ce surplus à la colonne Produit, tout en lui laissant un minimum
-    widths[1] = max(60.0, widths[1] - extra_needed)
-    # Si malgré tout il manque encore, on grignote un peu "Référence" et "DDM"
-    total = sum(widths)
-    if total > 180.0:
-        overflow = total - 180.0
-        for j in (0, 2):
-            take = min(overflow/2, max(0.0, widths[j]-16.0))  # garde min 16 mm
-            widths[j] -= take
-            overflow -= take
-        if overflow > 0:
-            # dernier recours : on rogne très légèrement Produit
-            widths[1] = max(58.0, widths[1] - overflow)
+# --- Auto-ajustement: garder les TITRES sur 1 ligne,
+# en respectant des LARGEURS MIN pour certaines colonnes (dont Référence & DDM)
+pdf.set_font("Helvetica", "B", 10)
+margin_mm = 2.5
+min_w = {0: 30.0, 1: 58.0, 2: 26.0, 3: 22.0, 4: 20.0, 5: 18.0}
 
-    # Dessin de l'en-tête (1 ligne, pas de wrap)
-    x = left; y = pdf.get_y()
-    for h, w in zip(headers, widths):
-        pdf.set_xy(x, y)
-        pdf.cell(w, header_h, _txt(h), border=1, align="C", fill=True)
-        x += w
-    pdf.set_xy(left, y + header_h)
+extra_needed = 0.0
+for j, h in enumerate(headers):
+    if j == 1:  # on "prend" l'espace à la colonne Produit
+        continue
+    need = pdf.get_string_width(_txt(h)) + 2 * margin_mm
+    new_w = max(widths[j], need, min_w.get(j, widths[j]))
+    extra_needed += max(0.0, new_w - widths_base[j])
+    widths[j] = new_w
+
+# On retire le surplus à la colonne Produit, en gardant un minimum confortable
+widths[1] = max(min_w[1], widths[1] - extra_needed)
+
+# Si on dépasse encore 180, on égalise doucement sans passer sous les minima
+total = sum(widths)
+if total > 180.0:
+    overflow = total - 180.0
+    # 1) encore un peu sur Produit si possible
+    take = min(overflow, max(0.0, widths[1] - min_w[1]))
+    widths[1] -= take
+    overflow -= take
+    # 2) répartir sur autres colonnes “numériques” en dernier recours
+    for j in (3, 4, 5, 0, 2):  # QtéC, QtéP, Poids, Réf, DDM
+        if overflow <= 0:
+            break
+        free = max(0.0, widths[j] - min_w[j])
+        d = min(free, overflow)
+        widths[j] -= d
+        overflow -= d
+
+# --- Dessin de l'en-tête (1 seule ligne, pas de wrap)
+x = left
+y = pdf.get_y()
+for h, w in zip(headers, widths):
+    pdf.set_xy(x, y)
+    pdf.cell(w, header_h, _txt(h), border=1, align="C", fill=True)
+    x += w
+pdf.set_xy(left, y + header_h)
+
 
     # Lignes du tableau
     pdf.set_font("Helvetica","",10)
