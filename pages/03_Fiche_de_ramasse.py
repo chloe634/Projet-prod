@@ -62,39 +62,80 @@ def _format_from_stock(stock_txt: str) -> str | None:
 def _load_catalog(path: str) -> pd.DataFrame:
     """
     Lit info_FDR.csv et prépare colonnes auxiliaires pour le matching.
+    - normalise Poids (virgule -> point)
+    - prépare Format normalisé et formes canonisées de Produit/Désignation
     """
+    import pandas as pd, os, re
     if not os.path.exists(path):
         return pd.DataFrame(columns=["Produit","Format","Désignation","Code-barre","Poids"])
+
     df = pd.read_csv(path, encoding="utf-8")
     for c in ["Produit","Format","Désignation","Code-barre"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
+
+    # Poids: "7,23" -> "7.23" puis numeric
     if "Poids" in df.columns:
+        df["Poids"] = (
+            df["Poids"]
+            .astype(str)
+            .str.replace(",", ".", regex=False)
+        )
         df["Poids"] = pd.to_numeric(df["Poids"], errors="coerce")
 
+    # Format: "12x33cl" -> "12x33", "6x75cl" -> "6x75"
     df["_format_norm"] = df.get("Format","").astype(str).str.lower()
-    df["_format_norm"] = df["_format_norm"].str.replace("cl","").str.replace(" ", "", regex=False)
+    df["_format_norm"] = (
+        df["_format_norm"]
+        .str.replace("cl", "", regex=False)
+        .str.replace(" ", "", regex=False)
+    )
+
+    # Canon pour Produit / Désignation
     df["_canon_prod"] = df.get("Produit","").map(_canon)
-    df["_canon_des"]  = df.get("Désignation","").map(lambda s: _canon(re.sub(r"\(.*\)","", s)))
+    # on retire tout ce qui est entre parenthèses, puis canon
+    df["_canon_des"]  = df.get("Désignation","").map(lambda s: _canon(re.sub(r"\(.*?\)", "", s)))
+
     return df
 
-def _csv_lookup(catalog: pd.DataFrame, prod_hint: str, fmt: str) -> tuple[str, float] | None:
-    """
-    Retourne (référence_6_chiffres, poids_carton)
-    en matchant sur Format + Produit/Désignation du CSV.
-    """
-    if catalog is None or catalog.empty or not fmt:
-        return None
-    fmt_norm = fmt.lower().replace("cl","").replace(" ", "")
-    c_prod = _canon(prod_hint)
 
-    cand = catalog[(catalog["_format_norm"].str.contains(fmt_norm)) & (catalog["_canon_prod"] == c_prod)]
-    if cand.empty:
-        cand = catalog[(catalog["_format_norm"].str.contains(fmt_norm)) & (catalog["_canon_des"].str.contains(c_prod))]
-    if cand.empty:
-        cand = catalog[catalog["_format_norm"].str.contains(fmt_norm)]
+def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple[str, float] | None:
+    """
+    Retourne (référence_6_chiffres, poids_carton) en matchant :
+      - format (12x33 / 6x75 / 4x75)
+      - + goût canonisé (ex: 'mangue passion') contre Produit/Désignation du CSV
+    """
+    if catalog is None or catalog.empty or not fmt_label:
+        return None
+
+    fmt_norm = fmt_label.lower().replace("cl","").replace(" ", "")
+    g_can = _canon(gout_canon)
+
+    # filtre format d'abord
+    cand = catalog[catalog["_format_norm"].str.contains(fmt_norm, na=False)]
     if cand.empty:
         return None
+
+    # 1) match strict sur Produit canonisé
+    m1 = cand[cand["_canon_prod"] == g_can]
+    if m1.empty:
+        # 2) sinon, on vérifie que tous les tokens du goût sont dans la désignation canonisée
+        toks = [t for t in g_can.split() if t]
+        def _contains_all(s):
+            s2 = str(s or "")
+            return all(t in s2 for t in toks)
+        m1 = cand[cand["_canon_des"].map(_contains_all)]
+
+    if m1.empty:
+        # en dernier recours, on prend juste le premier du bon format
+        m1 = cand
+
+    row = m1.iloc[0]
+    code = re.sub(r"\D+", "", str(row.get("Code-barre","")))
+    ref6 = code[-6:] if len(code) >= 6 else code
+    poids = float(row.get("Poids") or 0.0)
+    return (ref6, poids) if ref6 else None
+
 
     row = cand.iloc[0]
     code = re.sub(r"\D+", "", str(row.get("Code-barre","")))
@@ -171,14 +212,13 @@ meta_by_label = {}
 rows = []
 for lab in selection_labels:
     row_opt = opts_df.loc[opts_df["label"] == lab].iloc[0]
-    prod_hint = row_opt["prod_hint"]
-    fmt       = row_opt["format"]
+    gout     = row_opt["gout"]          # <-- on utilise le GOÛT canonisé
+    fmt      = row_opt["format"]
 
     ref = ""; poids_carton = 0.0
-    lk = _csv_lookup(catalog, prod_hint, fmt)
+    lk = _csv_lookup(catalog, gout, fmt)  # <-- lookup par goût + format
     if lk:
         ref, poids_carton = lk
-
     meta_by_label[lab] = {"_format": fmt, "_poids_carton": poids_carton, "_reference": ref}
 
     rows.append({
