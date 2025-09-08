@@ -295,34 +295,71 @@ def fill_bl_enlevements_xlsx(
         for i, line in enumerate(destinataire_lines[:3], start=1):
             ws.cell(row=r + i, column=c + 1).value = line
 
-    # 3) Tableau principal : repère la ligne d'en-têtes
-    headers = [
-        "Référence", "Produit", "DDM",
-        "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"
-    ]
-    hdr_row, colmap = _find_table_headers(ws, headers)
-    if not hdr_row:
-        raise KeyError("En-têtes du tableau introuvables dans le modèle Excel.")
+   # 3) Tableau principal : repère la ligne d’en-têtes (tolérant)
+import unicodedata
 
-    # sécurité: si un nom attendu manque, on tente des variantes
-    def _col(name: str, *alts) -> Optional[int]:
-        if colmap.get(name) is not None:
-            return colmap[name]
-        for a in alts:
-            if colmap.get(a) is not None:
-                return colmap[a]
-        return None
+def _norm_header(s: str) -> str:
+    s = str(s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    for ch in ["(", ")", ":", ";", ","]:
+        s = s.replace(ch, " ")
+    s = " ".join(s.split())
+    return s
 
-    c_ref   = _col("Référence")
-    c_prod  = _col("Produit")
-    c_ddm   = _col("DDM")
-    c_qc    = _col("Quantité cartons", "Quantité carton", "Qté cartons")
-    c_qp    = _col("Quantité palettes", "Qté palettes")
-    c_poids = _col("Poids palettes (kg)", "Poids palettes")
+def _match_header(name: str, header_cells: list[str], contains: bool=False) -> int | None:
+    # retourne l’index 0-based dans la ligne d’en-tête
+    target = _norm_header(name)
+    for i, cell in enumerate(header_cells):
+        h = _norm_header(cell)
+        if (contains and target in h) or (not contains and h == target):
+            return i
+    return None
 
-    need = [c_ref, c_prod, c_ddm, c_qc, c_qp, c_poids]
-    if any(v is None for v in need):
-        raise KeyError(f"Colonnes incomplètes dans le modèle Excel: {colmap}")
+# on localise la ligne d’en-tête (on réutilise ton helper pour la ligne)
+hdr_row, _ = _find_table_headers(
+    ws,
+    ["Référence", "Produit", "DDM", "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"]
+)
+if not hdr_row:
+    raise KeyError("Ligne d’en-têtes introuvable dans le modèle Excel.")
+
+# valeurs brutes de la ligne d’en-tête
+header_vals = [ws.cell(row=hdr_row, column=j).value for j in range(1, ws.max_column + 1)]
+
+def _idx(label: str, contains: bool=False) -> int | None:
+    i = _match_header(label, header_vals, contains=contains)
+    return (i + 1) if i is not None else None   # 1-based (colonnes Excel)
+
+# Synonymes / variantes acceptés
+c_ref   = _idx("référence") or _idx("reference")
+c_prod  = (
+    _idx("produit")
+    or _idx("produit (gout + format)", contains=True)
+    or _idx("produit gout format", contains=True)
+)
+c_ddm   = _idx("ddm") or _idx("date de durabilite", contains=True)
+c_qc    = _idx("quantité cartons") or _idx("quantite cartons")
+c_qp    = _idx("quantité palettes") or _idx("quantite palettes")
+c_poids = _idx("poids palettes (kg)") or _idx("poids palettes") or _idx("poids (kg)")
+
+# Fallback : si Produit manquant mais structure Réf | Produit | DDM respectée
+if c_prod is None and c_ref is not None and c_ddm is not None and c_ddm > c_ref:
+    if (c_ddm - c_ref) >= 2:   # il y a une colonne entre Réf et DDM
+        c_prod = c_ref + 1
+
+# Vérification finale
+need = {
+    "Référence": c_ref,
+    "Produit": c_prod,
+    "DDM": c_ddm,
+    "Quantité cartons": c_qc,
+    "Quantité palettes": c_qp,
+    "Poids palettes (kg)": c_poids,
+}
+missing = [k for k, v in need.items() if v is None]
+if missing:
+    raise KeyError(f"Colonnes incomplètes dans le modèle Excel: {need}")
 
     # 4) Ecriture des lignes
     row_out = hdr_row + 1
