@@ -528,7 +528,7 @@ def build_bl_enlevements_pdf(
         pdf.set_xy(x_box, y0 + row_h)
 
     _row_simple("DATE DE CREATION :", date_creation.strftime("%d/%m/%Y"))
-    _row_simple("DATE DE RAMMASSE :", date_ramasse.strftime("%d/%m/%Y"))
+    _row_simple("DATE DE RAMASSE :", date_ramasse.strftime("%d/%m/%Y"))
     _row_dest("DESTINATAIRE :", destinataire_title, destinataire_lines)
 
     # ---- Tableau
