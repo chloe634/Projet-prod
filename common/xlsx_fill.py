@@ -438,105 +438,174 @@ def build_bl_enlevements_pdf(
     destinataire_title: str,
     destinataire_lines: List[str],
     df_lines: pd.DataFrame,
+    *,
+    logo_path: str | None = "assets/logo_symbiose.png",
+    issuer_name: str = "FERMENT STATION",
+    issuer_lines: List[str] | None = None,
+    issuer_footer: str | None = "Produits issus de l'Agriculture Biologique certifié par FR-BIO-01",
+    col2_header: str | None = None,   # texte d'en-tête de la 2e colonne (ex: dernière ligne d'adresse)
 ) -> bytes:
     """
-    Construit un PDF 'BL enlèvements' à partir des mêmes colonnes que pour l'XLSX.
-    Version sans police Unicode : on nettoie les caractères non pris en charge
-    par Helvetica (latin-1) pour éviter l'erreur FPDF.
+    PDF 'BL enlèvements' calé sur le rendu Excel : logo, en-tête encadrée,
+    tableau gris, totaux. Encode latin-1 (Helvetica) avec nettoyage.
     """
+    import os
     from fpdf import FPDF
     from fpdf.enums import XPos, YPos
 
-    # --------- helpers : texte sûr latin-1 (Helvetica) ----------
+    # ---------- helpers ----------
     def _latin1_safe(s: str) -> str:
         s = str(s or "")
-        # remplacements ciblés (– — ’ “ ” … NBSP NNBSP fines etc.)
         repl = {
-            "—": "-", "–": "-", "-": "-", "‒": "-",  # tirets spéciaux → "-"
-            "’": "'", "‘": "'", "´": "'", "ˊ": "'",   # apostrophes courbes
-            "“": '"', "”": '"',                      # guillemets courbes
-            "…": "...", "•": "-",                    # ellipsis, bullet
-            "\u00A0": " ", "\u202F": " ", "\u2009": " ",  # espaces insécables/fines
-            "œ": "oe", "Œ": "OE",                    # hors latin-1
-            "€": "EUR",                              # pas latin-1
+            "—": "-", "–": "-", "‒": "-", "’": "'", "‘": "'",
+            "“": '"', "”": '"', "…": "...", "•": "-", "œ": "oe", "Œ": "OE",
+            "\u00A0": " ", "\u202F": " ", "\u2009": " ", "€": "EUR",
         }
-        for k, v in repl.items():
-            s = s.replace(k, v)
-        # remplace tout reste hors latin-1 par '?'
-        try:
-            s = s.encode("latin-1", "replace").decode("latin-1")
-        except Exception:
-            pass
-        return s
+        for k, v in repl.items(): s = s.replace(k, v)
+        return s.encode("latin-1", "replace").decode("latin-1")
 
-    def _txt(x) -> str:
-        return _latin1_safe(x)
+    def _txt(x) -> str: return _latin1_safe(x)
 
-    # --------- normalisation colonnes d'entrée ----------
+    # ---------- normalisation DF ----------
     df = df_lines.copy()
     if "Produit" not in df.columns and "Produit (goût + format)" in df.columns:
         df = df.rename(columns={"Produit (goût + format)": "Produit"})
+    def _ival(x): 
+        try: return int(round(float(x)))
+        except: return 0
 
-    def _ival(x):
-        try:
-            f = float(x)
-            return int(round(f))
-        except Exception:
-            return 0
-
-    # --------- PDF ----------
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    # ---------- PDF ----------
+    pdf = FPDF("P", "mm", "A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+    left, right = 15, 195  # marges
+    width = right - left
 
-    # En-tête (⚠️ tiret simple, pas cadratin)
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, _txt("BL enlevements - Sofripa"), ln=1)
+    # ---- bandeau logo + coordonnées émetteur
+    y = 18
+    if logo_path and os.path.exists(logo_path):
+        pdf.image(logo_path, x=left, y=y-2, w=28)
+        x_text = left + 34
+    else:
+        x_text = left
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 6, _txt(f"Date de creation : {date_creation.strftime('%d/%m/%Y')}"), ln=1)
-    pdf.cell(0, 6, _txt(f"Date de ramasse : {date_ramasse.strftime('%d/%m/%Y')}"), ln=1)
+    pdf.set_xy(x_text, y)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 6, _txt(issuer_name), ln=1)
+    pdf.set_x(x_text); pdf.set_font("Helvetica", "", 11)
+    if issuer_lines is None:
+        issuer_lines = [
+            "Carré Ivry Bâtiment D2",
+            "47 rue Ernest Renan",
+            "94200 Ivry-sur-Seine - FRANCE",
+            "Tél : 0967504647",
+            "Site : https://www.symbiose-kefir.fr",
+        ]
+    for line in issuer_lines:
+        pdf.set_x(x_text); pdf.cell(0, 5, _txt(line), ln=1)
+    if issuer_footer:
+        pdf.ln(2); pdf.set_x(x_text); pdf.set_font("Helvetica", "", 9)
+        pdf.cell(0, 4, _txt(issuer_footer), ln=1)
     pdf.ln(2)
 
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 6, _txt("Destinataire :"), ln=1)
+    # ---- encadré "BON DE LIVRAISON" + dates
+    pdf.set_font("Helvetica", "B", 12)
+    x_box, y_box, w_box = left, pdf.get_y()+2, width*0.70
+    pdf.set_xy(x_box, y_box)
+    pdf.cell(w_box, 8, _txt("BON DE LIVRAISON"), border=1, ln=1)
+    # lignes à l'intérieur
     pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 5, _txt(destinataire_title), ln=1)
-    for line in destinataire_lines:
-        pdf.cell(0, 5, _txt(line), ln=1)
-    pdf.ln(4)
+    def row_kv(lbl, val):
+        pdf.set_x(x_box)
+        pdf.cell(w_box*0.55, 8, _txt(lbl), border=1)
+        pdf.cell(w_box*0.45, 8, _txt(val), border=1, ln=1, align="R")
+    row_kv("DATE DE CREATION :", date_creation.strftime("%d/%m/%Y"))
+    row_kv("DATE DE RAMMASSE :", date_ramasse.strftime("%d/%m/%Y"))
+    row_kv("DESTINATAIRE :", destinataire_title)
 
-    # Tableau
-    headers = ["Référence", "Produit", "DDM", "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"]
-    widths  = [28, 76, 22, 18, 18, 18]
-    line_h  = 6
+    pdf.ln(3)
+    # sous-titre centré (1re ligne d'adresse destinataire si dispo)
+    if destinataire_lines:
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 6, _txt(destinataire_lines[0]), ln=1, align="C")
 
+    # ---- Tableau principal
+    pdf.ln(2)
     pdf.set_font("Helvetica", "B", 10)
-    pdf.set_fill_color(235, 235, 235)
-    for h, w in zip(headers, widths):
-        pdf.cell(w, line_h + 2, _txt(h), border=1, align="C", fill=True)
-    pdf.ln(line_h + 2)
+    pdf.set_fill_color(230, 230, 230)
 
+    # colonnes calées (total 180 mm)
+    headers = [
+        "Référence",
+        col2_header or "Produit",
+        "DDM",
+        "Quantité cartons",
+        "Quantité palettes",
+        "Poids palettes (kg)",
+    ]
+    widths = [24, 84, 20, 16, 16, 20]  # somme = 180
+    def draw_header():
+        pdf.set_x(left)
+        for h, w in zip(headers, widths):
+            pdf.cell(w, 8, _txt(h), border=1, align="C", fill=True)
+        pdf.ln(8)
+
+    draw_header()
     pdf.set_font("Helvetica", "", 10)
+
+    def will_break(h):  # et réimprime l'en-tête si nécessaire
+        if pdf.will_page_break(h):
+            pdf.add_page()
+            draw_header()
+
+    tot_cart, tot_pal, tot_poids = 0, 0, 0
     for _, r in df.iterrows():
         ref = _txt(r.get("Référence", ""))
         prod = _txt(r.get("Produit", ""))
         ddm  = _txt(r.get("DDM", ""))
-        qc   = _txt(_ival(r.get("Quantité cartons", 0)))
-        qp   = _txt(_ival(r.get("Quantité palettes", 0)))
-        po   = _txt(_ival(r.get("Poids palettes (kg)", 0)))
+        qc   = _ival(r.get("Quantité cartons", 0));  tot_cart += qc
+        qp   = _ival(r.get("Quantité palettes", 0)); tot_pal  += qp
+        po   = _ival(r.get("Poids palettes (kg)", 0)); tot_poids += po
 
-        # hauteur dynamique selon le wrapping de 'Produit'
-        prod_lines = pdf.multi_cell(widths[1], line_h, prod, split_only=True)
-        row_h = max(line_h, line_h * len(prod_lines))
+        # hauteur dynamique selon 'Produit'
+        pdf.set_font("Helvetica", "", 10)
+        prod_lines = pdf.multi_cell(widths[1], 6, prod, split_only=True)
+        row_h = max(6, 6 * len(prod_lines))
+        will_break(row_h)
 
-        pdf.multi_cell(widths[0], row_h, ref,  border=1, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.multi_cell(widths[1], line_h, prod, border=1, align="L", new_x=XPos.RIGHT, new_y=YPos.TOP, max_line_height=line_h)
-        pdf.multi_cell(widths[2], row_h, ddm,  border=1, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.multi_cell(widths[3], row_h, qc,   border=1, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.multi_cell(widths[4], row_h, qp,   border=1, align="C", new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.multi_cell(widths[5], row_h, po,   border=1, align="C", new_x=XPos.LEFT,  new_y=YPos.NEXT)
+        # dessine la ligne entière
+        x = left; y = pdf.get_y()
+        # Réf
+        pdf.set_xy(x, y); pdf.multi_cell(widths[0], row_h, ref, border=1, align="C")
+        x += widths[0]
+        # Produit (wrap)
+        pdf.set_xy(x, y); pdf.multi_cell(widths[1], 6, prod, border=1, align="L",
+                                         max_line_height=6)
+        x += widths[1]
+        # DDM
+        pdf.set_xy(x, y); pdf.multi_cell(widths[2], row_h, ddm, border=1, align="C")
+        x += widths[2]
+        # Qté cartons
+        pdf.set_xy(x, y); pdf.multi_cell(widths[3], row_h, str(qc), border=1, align="C")
+        x += widths[3]
+        # Qté palettes
+        pdf.set_xy(x, y); pdf.multi_cell(widths[4], row_h, str(qp), border=1, align="C")
+        x += widths[4]
+        # Poids
+        pdf.set_xy(x, y); pdf.multi_cell(widths[5], row_h, str(po), border=1, align="C")
+        # place le curseur en début de ligne suivante
+        pdf.set_xy(left, y + row_h)
+
+    # ---- Totaux (ligne finale)
+    pdf.set_font("Helvetica", "B", 10)
+    will_break(8)
+    pdf.set_x(left)
+    pdf.cell(widths[0] + widths[1] + widths[2], 8, _txt("Totaux"), border=1, align="R")
+    pdf.cell(widths[3], 8, _txt(f"{tot_cart:,}".replace(",", " ")), border=1, align="C")
+    pdf.cell(widths[4], 8, _txt(f"{tot_pal:,}".replace(",", " ")), border=1, align="C")
+    pdf.cell(widths[5], 8, _txt(f"{tot_poids:,}".replace(",", " ")), border=1, align="C")
 
     return bytes(pdf.output(dest="S"))
+
 
 
