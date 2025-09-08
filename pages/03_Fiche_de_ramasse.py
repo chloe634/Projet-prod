@@ -13,7 +13,7 @@ from common.xlsx_fill import fill_bl_enlevements_xlsx  # <-- IMPORTANT : nom exa
 # Réglages
 # ------------------------------------------------------------------
 INFO_CSV_PATH = "info_FDR.csv"   # ton CSV catalogue (Code-barre, Poids, ...)
-TEMPLATE_XLSX_PATH = "assets/LOG_EN_001_01 BL enlèvements Sofripa-2.xlsx"
+TEMPLATE_XLSX_PATH = "assets/BL_enlevements_Sofripa.xlsx"
 
 DEST_TITLE = "SOFRIPA"
 DEST_LINES = [
