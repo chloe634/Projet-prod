@@ -11,7 +11,7 @@ from common.design import apply_theme, section, kpi
 import importlib
 import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
-from common.xlsx_fill import fill_bl_enlevements_xlsx
+from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 
 
 # ------------------------------------------------------------------
@@ -306,3 +306,29 @@ if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_containe
             )
         except Exception as e:
             st.error(f"Erreur lors du remplissage du modèle Excel : {e}")
+
+# 7-bis) Téléchargement PDF (rendu propre via fpdf2)
+if st.button("🧾 Télécharger la version PDF", use_container_width=True):
+    if tot_cartons <= 0:
+        st.error("Renseigne au moins une **Quantité cartons** > 0.")
+    else:
+        try:
+            pdf_bytes = build_bl_enlevements_pdf(
+                date_creation=_today_paris(),
+                date_ramasse=date_ramasse,
+                destinataire_title=DEST_TITLE,
+                destinataire_lines=DEST_LINES,
+                df_lines=df_calc[display_cols],
+            )
+            fname_pdf = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.pdf"
+            st.download_button(
+                "⬇️ Télécharger le PDF",
+                data=pdf_bytes,
+                file_name=fname_pdf,
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        except Exception as e:
+            st.error(f"Erreur lors de la génération du PDF : {e}")
+
+
