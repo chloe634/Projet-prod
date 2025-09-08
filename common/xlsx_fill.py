@@ -443,45 +443,37 @@ def build_bl_enlevements_pdf(
     issuer_name: str = "FERMENT STATION",
     issuer_lines: List[str] | None = None,
     issuer_footer: str | None = "Produits issus de l'Agriculture Biologique certifié par FR-BIO-01",
-    col2_header: str | None = None,   # texte d'en-tête de la 2e colonne (ex: dernière ligne d'adresse)
 ) -> bytes:
-    """
-    PDF 'BL enlèvements' calé sur le rendu Excel : logo, en-tête encadrée,
-    tableau gris, totaux. Encode latin-1 (Helvetica) avec nettoyage.
-    """
+    """PDF BL au look Excel : encadré, tableau gris, totaux. (Helvetica/latin-1)."""
     import os
     from fpdf import FPDF
     from fpdf.enums import XPos, YPos
 
-    # ---------- helpers ----------
+    # ---------- helpers texte latin-1 ----------
     def _latin1_safe(s: str) -> str:
         s = str(s or "")
-        repl = {
-            "—": "-", "–": "-", "‒": "-", "’": "'", "‘": "'",
-            "“": '"', "”": '"', "…": "...", "•": "-", "œ": "oe", "Œ": "OE",
-            "\u00A0": " ", "\u202F": " ", "\u2009": " ", "€": "EUR",
-        }
-        for k, v in repl.items(): s = s.replace(k, v)
-        return s.encode("latin-1", "replace").decode("latin-1")
-
+        repl = {"—":"-","–":"-","‒":"-","’":"'","‘":"'","“":'"',"”":'"',"…":"...",
+                "\u00A0":" ","\u202F":" ","\u2009":" ","œ":"oe","Œ":"OE","€":"EUR"}
+        for k,v in repl.items(): s = s.replace(k,v)
+        return s.encode("latin-1","replace").decode("latin-1")
     def _txt(x) -> str: return _latin1_safe(x)
 
-    # ---------- normalisation DF ----------
+    # ---------- data ----------
     df = df_lines.copy()
     if "Produit" not in df.columns and "Produit (goût + format)" in df.columns:
-        df = df.rename(columns={"Produit (goût + format)": "Produit"})
-    def _ival(x): 
+        df = df.rename(columns={"Produit (goût + format)":"Produit"})
+    def _ival(x):
         try: return int(round(float(x)))
         except: return 0
 
     # ---------- PDF ----------
-    pdf = FPDF("P", "mm", "A4")
+    pdf = FPDF("P","mm","A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    left, right = 15, 195  # marges
+    left, right = 15, 195
     width = right - left
 
-    # ---- bandeau logo + coordonnées émetteur
+    # ---- Logo + coordonnées expéditeur
     y = 18
     if logo_path and os.path.exists(logo_path):
         pdf.image(logo_path, x=left, y=y-2, w=28)
@@ -490,9 +482,8 @@ def build_bl_enlevements_pdf(
         x_text = left
 
     pdf.set_xy(x_text, y)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 6, _txt(issuer_name), ln=1)
-    pdf.set_x(x_text); pdf.set_font("Helvetica", "", 11)
+    pdf.set_font("Helvetica","B",12); pdf.cell(0,6,_txt(issuer_name), ln=1)
+    pdf.set_x(x_text); pdf.set_font("Helvetica","",11)
     if issuer_lines is None:
         issuer_lines = [
             "Carré Ivry Bâtiment D2",
@@ -502,108 +493,126 @@ def build_bl_enlevements_pdf(
             "Site : https://www.symbiose-kefir.fr",
         ]
     for line in issuer_lines:
-        pdf.set_x(x_text); pdf.cell(0, 5, _txt(line), ln=1)
+        pdf.set_x(x_text); pdf.cell(0,5,_txt(line), ln=1)
     if issuer_footer:
-        pdf.ln(2); pdf.set_x(x_text); pdf.set_font("Helvetica", "", 9)
-        pdf.cell(0, 4, _txt(issuer_footer), ln=1)
+        pdf.ln(2); pdf.set_x(x_text); pdf.set_font("Helvetica","",9)
+        pdf.cell(0,4,_txt(issuer_footer), ln=1)
     pdf.ln(2)
 
-    # ---- encadré "BON DE LIVRAISON" + dates
-    pdf.set_font("Helvetica", "B", 12)
-    x_box, y_box, w_box = left, pdf.get_y()+2, width*0.70
-    pdf.set_xy(x_box, y_box)
+    # ---- Encadré "BON DE LIVRAISON"
+    x_box, w_box = left, width*0.70
+    w_lbl, w_val = w_box*0.55, w_box*0.45
+    pdf.set_font("Helvetica","B",12)
+    y_box_title = pdf.get_y()+2
+    pdf.set_xy(x_box, y_box_title)
     pdf.cell(w_box, 8, _txt("BON DE LIVRAISON"), border=1, ln=1)
-    # lignes à l'intérieur
-    pdf.set_font("Helvetica", "", 11)
-    def row_kv(lbl, val):
+
+    pdf.set_font("Helvetica","",11)
+
+    # Ligne simple (hauteur 8)
+    def _row_simple(label: str, value: str):
         pdf.set_x(x_box)
-        pdf.cell(w_box*0.55, 8, _txt(lbl), border=1)
-        pdf.cell(w_box*0.45, 8, _txt(val), border=1, ln=1, align="R")
-    row_kv("DATE DE CREATION :", date_creation.strftime("%d/%m/%Y"))
-    row_kv("DATE DE RAMMASSE :", date_ramasse.strftime("%d/%m/%Y"))
-    row_kv("DESTINATAIRE :", destinataire_title)
+        pdf.cell(w_lbl, 8, _txt(label), border=1)
+        pdf.cell(w_val, 8, _txt(value), border=1, ln=1, align="R")
+
+    # Ligne DESTINATAIRE en multi-ligne (titre + adresse complète dans la même cellule)
+    def _row_dest(label: str, title: str, lines: List[str]):
+        val_text = "\n".join([title] + (lines or []))
+        # calcule la hauteur requise
+        n_lines = len(pdf.multi_cell(w_val, 6, _txt(val_text), split_only=True)) or 1
+        row_h = max(8, 6*n_lines)
+        y0 = pdf.get_y()
+        # label (hauteur totale)
+        pdf.set_xy(x_box, y0); pdf.cell(w_lbl, row_h, _txt(label), border=1)
+        # valeur multi
+        pdf.set_xy(x_box + w_lbl, y0); pdf.multi_cell(w_val, 6, _txt(val_text), border=1)
+        # place le curseur au bas de la ligne
+        pdf.set_xy(x_box, y0 + row_h)
+
+    _row_simple("DATE DE CREATION :", date_creation.strftime("%d/%m/%Y"))
+    _row_simple("DATE DE RAMMASSE :", date_ramasse.strftime("%d/%m/%Y"))
+    _row_dest("DESTINATAIRE :", destinataire_title, destinataire_lines)
 
     pdf.ln(3)
-    # sous-titre centré (1re ligne d'adresse destinataire si dispo)
+
+    # (facultatif) une ligne centrée sous l’encadré
     if destinataire_lines:
-        pdf.set_font("Helvetica", "", 11)
-        pdf.cell(0, 6, _txt(destinataire_lines[0]), ln=1, align="C")
+        pdf.set_font("Helvetica","",11)
+        pdf.cell(0,6,_txt(destinataire_lines[0]), ln=1, align="C")
 
-    # ---- Tableau principal
+    # ---- Tableau
     pdf.ln(2)
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.set_fill_color(230, 230, 230)
+    pdf.set_fill_color(230,230,230)
 
-    # colonnes calées (total 180 mm)
     headers = [
         "Référence",
-        col2_header or "Produit",
+        "Produit",
         "DDM",
-        "Quantité cartons",
-        "Quantité palettes",
-        "Poids palettes (kg)",
+        "Quantité\ncartons",
+        "Quantité\npalettes",
+        "Poids palettes\n(kg)",
     ]
-    widths = [24, 84, 20, 16, 16, 20]  # somme = 180
-    def draw_header():
-        pdf.set_x(left)
-        for h, w in zip(headers, widths):
-            pdf.cell(w, 8, _txt(h), border=1, align="C", fill=True)
-        pdf.ln(8)
+    # Largeurs : total = 180 mm
+    widths  = [24, 90, 20, 18, 16, 12]
+    line_h  = 6
 
-    draw_header()
-    pdf.set_font("Helvetica", "", 10)
+    # En-tête multi-ligne (calcul de la hauteur max)
+    pdf.set_font("Helvetica","B",10)
+    header_lines = [pdf.multi_cell(w, line_h, _txt(h), split_only=True) for h, w in zip(headers, widths)]
+    header_h = max(line_h*max(1, len(ls)) for ls in header_lines)
 
-    def will_break(h):  # et réimprime l'en-tête si nécessaire
+    # dessine l'en-tête
+    x = left; y = pdf.get_y()
+    for h, w in zip(headers, widths):
+        pdf.set_xy(x, y)
+        pdf.multi_cell(w, line_h, _txt(h), border=1, align="C", fill=True, max_line_height=line_h)
+        x += w
+    pdf.set_xy(left, y + header_h)
+
+    # lignes
+    pdf.set_font("Helvetica","",10)
+    tot_cart = tot_pal = tot_poids = 0
+    def _maybe_break(h):
         if pdf.will_page_break(h):
             pdf.add_page()
-            draw_header()
+            # reimprimer l'en-tête
+            pdf.set_font("Helvetica","B",10)
+            x = left; y = pdf.get_y()
+            for h, w in zip(headers, widths):
+                pdf.set_xy(x, y)
+                pdf.multi_cell(w, line_h, _txt(h), border=1, align="C", fill=True, max_line_height=line_h)
+                x += w
+            pdf.set_xy(left, y + header_h)
+            pdf.set_font("Helvetica","",10)
 
-    tot_cart, tot_pal, tot_poids = 0, 0, 0
     for _, r in df.iterrows():
-        ref = _txt(r.get("Référence", ""))
-        prod = _txt(r.get("Produit", ""))
-        ddm  = _txt(r.get("DDM", ""))
-        qc   = _ival(r.get("Quantité cartons", 0));  tot_cart += qc
-        qp   = _ival(r.get("Quantité palettes", 0)); tot_pal  += qp
-        po   = _ival(r.get("Poids palettes (kg)", 0)); tot_poids += po
+        ref = _txt(r.get("Référence",""))
+        prod = _txt(r.get("Produit",""))
+        ddm  = _txt(r.get("DDM",""))
+        qc   = _ival(r.get("Quantité cartons",0));  tot_cart  += qc
+        qp   = _ival(r.get("Quantité palettes",0)); tot_pal   += qp
+        po   = _ival(r.get("Poids palettes (kg)",0)); tot_poids += po
 
-        # hauteur dynamique selon 'Produit'
-        pdf.set_font("Helvetica", "", 10)
-        prod_lines = pdf.multi_cell(widths[1], 6, prod, split_only=True)
-        row_h = max(6, 6 * len(prod_lines))
-        will_break(row_h)
+        # hauteur selon 'Produit'
+        prod_lines = pdf.multi_cell(widths[1], line_h, prod, split_only=True)
+        row_h = max(line_h, line_h*len(prod_lines))
+        _maybe_break(row_h)
 
-        # dessine la ligne entière
         x = left; y = pdf.get_y()
-        # Réf
-        pdf.set_xy(x, y); pdf.multi_cell(widths[0], row_h, ref, border=1, align="C")
-        x += widths[0]
-        # Produit (wrap)
-        pdf.set_xy(x, y); pdf.multi_cell(widths[1], 6, prod, border=1, align="L",
-                                         max_line_height=6)
-        x += widths[1]
-        # DDM
-        pdf.set_xy(x, y); pdf.multi_cell(widths[2], row_h, ddm, border=1, align="C")
-        x += widths[2]
-        # Qté cartons
-        pdf.set_xy(x, y); pdf.multi_cell(widths[3], row_h, str(qc), border=1, align="C")
-        x += widths[3]
-        # Qté palettes
-        pdf.set_xy(x, y); pdf.multi_cell(widths[4], row_h, str(qp), border=1, align="C")
-        x += widths[4]
-        # Poids
-        pdf.set_xy(x, y); pdf.multi_cell(widths[5], row_h, str(po), border=1, align="C")
-        # place le curseur en début de ligne suivante
+        pdf.set_xy(x,y); pdf.multi_cell(widths[0], row_h, ref, border=1, align="C"); x += widths[0]
+        pdf.set_xy(x,y); pdf.multi_cell(widths[1], line_h, prod, border=1, align="L", max_line_height=line_h); x += widths[1]
+        pdf.set_xy(x,y); pdf.multi_cell(widths[2], row_h, ddm, border=1, align="C"); x += widths[2]
+        pdf.set_xy(x,y); pdf.multi_cell(widths[3], row_h, str(qc), border=1, align="C"); x += widths[3]
+        pdf.set_xy(x,y); pdf.multi_cell(widths[4], row_h, str(qp), border=1, align="C"); x += widths[4]
+        pdf.set_xy(x,y); pdf.multi_cell(widths[5], row_h, str(po), border=1, align="C")
         pdf.set_xy(left, y + row_h)
 
-    # ---- Totaux (ligne finale)
-    pdf.set_font("Helvetica", "B", 10)
-    will_break(8)
-    pdf.set_x(left)
+    # Totaux
+    pdf.set_font("Helvetica","B",10)
     pdf.cell(widths[0] + widths[1] + widths[2], 8, _txt("Totaux"), border=1, align="R")
-    pdf.cell(widths[3], 8, _txt(f"{tot_cart:,}".replace(",", " ")), border=1, align="C")
-    pdf.cell(widths[4], 8, _txt(f"{tot_pal:,}".replace(",", " ")), border=1, align="C")
-    pdf.cell(widths[5], 8, _txt(f"{tot_poids:,}".replace(",", " ")), border=1, align="C")
+    pdf.cell(widths[3], 8, _txt(f"{tot_cart:,}".replace(","," ")), border=1, align="C")
+    pdf.cell(widths[4], 8, _txt(f"{tot_pal:,}".replace(","," ")),  border=1, align="C")
+    pdf.cell(widths[5], 8, _txt(f"{tot_poids:,}".replace(","," ")), border=1, align="C")
 
     return bytes(pdf.output(dest="S"))
 
