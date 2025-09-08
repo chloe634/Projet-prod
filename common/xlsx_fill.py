@@ -429,3 +429,107 @@ def fill_bl_enlevements_xlsx(
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
+
+# =======================  PDF BL enlèvements (fpdf2)  =======================
+
+def build_bl_enlevements_pdf(
+    date_creation: date,
+    date_ramasse: date,
+    destinataire_title: str,
+    destinataire_lines: List[str],
+    df_lines: pd.DataFrame,
+) -> bytes:
+    """
+    Construit un PDF 'BL enlèvements' à partir des mêmes colonnes que pour l'XLSX :
+      - 'Référence'
+      - 'Produit (goût + format)' ou 'Produit'
+      - 'DDM'
+      - 'Quantité cartons'
+      - 'Quantité palettes'
+      - 'Poids palettes (kg)'
+    """
+    import pandas as _pd
+    from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
+
+    # Normalisation des colonnes d'entrée
+    df = df_lines.copy()
+    if "Produit" not in df.columns and "Produit (goût + format)" in df.columns:
+        df = df.rename(columns={"Produit (goût + format)": "Produit"})
+
+    def _ival(x):
+        try:
+            f = float(x)
+            return int(round(f))
+        except Exception:
+            return 0
+
+    # PDF A4 portrait
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # Titre + dates + destinataire
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "BL enlèvements — Sofripa", ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 6, f"Date de création : {date_creation.strftime('%d/%m/%Y')}", ln=1)
+    pdf.cell(0, 6, f"Date de ramasse : {date_ramasse.strftime('%d/%m/%Y')}", ln=1)
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, "Destinataire :", ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 5, destinataire_title, ln=1)
+    for line in destinataire_lines:
+        pdf.cell(0, 5, str(line), ln=1)
+    pdf.ln(4)
+
+    # Tableau
+    headers = ["Référence", "Produit", "DDM", "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"]
+    # Largeurs = 180 mm au total (marges 15 mm de chaque côté)
+    widths  = [28, 76, 22, 18, 18, 18]
+    line_h  = 6
+
+    # En-tête
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_fill_color(235, 235, 235)
+    for h, w in zip(headers, widths):
+        pdf.cell(w, line_h + 2, h, border=1, align="C", fill=True)
+    pdf.ln(line_h + 2)
+    pdf.set_font("Helvetica", "", 10)
+
+    for _, r in df.iterrows():
+        ref = str(r.get("Référence", "") or "")
+        prod = str(r.get("Produit", "") or "")
+        ddm = str(r.get("DDM", "") or "")
+        qc  = str(_ival(r.get("Quantité cartons", 0)))
+        qp  = str(_ival(r.get("Quantité palettes", 0)))
+        po  = str(_ival(r.get("Poids palettes (kg)", 0)))
+
+        # Calcule la hauteur de ligne en fonction du wrapping du libellé produit
+        prod_lines = pdf.multi_cell(widths[1], line_h, prod, split_only=True)
+        row_h = max(line_h, line_h * len(prod_lines))
+
+        # Colonne 1 : Référence
+        pdf.multi_cell(widths[0], row_h, ref, border=1, align="C",
+                       new_x=XPos.RIGHT, new_y=YPos.TOP)
+        # Colonne 2 : Produit (multi-lignes)
+        pdf.multi_cell(widths[1], line_h, prod, border=1, align="L",
+                       new_x=XPos.RIGHT, new_y=YPos.TOP, max_line_height=line_h)
+        # Colonne 3 : DDM
+        pdf.multi_cell(widths[2], row_h, ddm, border=1, align="C",
+                       new_x=XPos.RIGHT, new_y=YPos.TOP)
+        # Colonne 4 : Quantité cartons
+        pdf.multi_cell(widths[3], row_h, qc, border=1, align="C",
+                       new_x=XPos.RIGHT, new_y=YPos.TOP)
+        # Colonne 5 : Quantité palettes
+        pdf.multi_cell(widths[4], row_h, qp, border=1, align="C",
+                       new_x=XPos.RIGHT, new_y=YPos.TOP)
+        # Colonne 6 : Poids palettes (kg)
+        pdf.multi_cell(widths[5], row_h, po, border=1, align="C",
+                       new_x=XPos.LEFT, new_y=YPos.NEXT)
+
+    # Retourne les bytes du PDF
+    return bytes(pdf.output(dest="S"))
+
+
