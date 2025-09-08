@@ -7,7 +7,12 @@ import streamlit as st
 from dateutil.tz import gettz
 
 from common.design import apply_theme, section, kpi
-from common.xlsx_fill import fill_bl_enlevements_xlsx  # <-- IMPORTANT : nom exact
+# au lieu de: from common.xlsx_fill import fill_bl_enlevements_xlsx
+import importlib
+import common.xlsx_fill as _xlsx_fill
+importlib.reload(_xlsx_fill)
+from common.xlsx_fill import fill_bl_enlevements_xlsx
+
 
 # ------------------------------------------------------------------
 # Réglages
