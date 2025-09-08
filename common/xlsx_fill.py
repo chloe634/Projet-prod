@@ -205,3 +205,165 @@ def fill_fiche_7000L_xlsx(
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
+
+# --- AJOUTER EN BAS DE common/xlsx_fill.py ---
+
+from typing import Dict, List, Tuple, Optional
+import re
+import openpyxl
+from openpyxl.utils.cell import get_column_letter
+
+def _find_cell_by_regex(ws, pattern: str):
+    """Retourne (row, col) de la 1ère cellule qui match le regex (insensible à la casse)."""
+    rx = re.compile(pattern, flags=re.IGNORECASE)
+    for r in ws.iter_rows(values_only=True):
+        pass  # force lazy eval
+    for row in ws.iter_rows(values_only=False):
+        for c in row:
+            v = str(c.value or "").strip()
+            if v and rx.search(v):
+                return c.row, c.column
+    return None, None
+
+def _find_table_headers(ws, headers: List[str]) -> Tuple[Optional[int], Dict[str, int]]:
+    """
+    Retourne (header_row, mapping header_name -> col index) en détectant la ligne
+    contenant les en-têtes (ordre quelconque).
+    """
+    want = {h.lower(): None for h in headers}
+    header_row = None
+    for row in ws.iter_rows(values_only=False):
+        found = {}
+        for c in row:
+            v = str(c.value or "").strip().lower()
+            if v in want and v not in found:
+                found[v] = c.column
+        # ligne valide si on a au moins 4-5 en-têtes clés
+        if len(found) >= max(4, len(headers) - 2):
+            header_row = row[0].row
+            colmap = {}
+            for h in headers:
+                colmap[h] = found.get(h.lower(), None)
+            return header_row, colmap
+    return None, {}
+
+def _write_right_of(ws, row: int, col_start: int, value, max_scan: int = 12):
+    """
+    Ecrit la valeur dans la 1ère cellule vide à droite de col_start (sur la même ligne).
+    Si rien de vide n'est trouvé dans la fenêtre, écrit à col_start+1.
+    """
+    c = col_start + 1
+    for j in range(col_start + 1, col_start + 1 + max_scan):
+        cell = ws.cell(row=row, column=j)
+        if cell.value in (None, ""):
+            c = j
+            break
+    ws.cell(row=row, column=c).value = value
+    return c
+
+def fill_bl_enlevements_xlsx(
+    template_path: str,
+    date_creation: "date",
+    date_ramasse: "date",
+    destinataire_title: str,
+    destinataire_lines: List[str],
+    df_lines,  # DataFrame avec colonnes: Référence, Produit (goût + format), DDM, Quantité cartons, Quantité palettes, Poids palettes (kg)
+) -> bytes:
+    """
+    Remplit le modèle Excel Sofripa automatiquement (détection des en-têtes + libellés).
+    Renvoie les bytes XLSX prêts à être téléchargés.
+    """
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"Modèle introuvable: {template_path}")
+
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active  # 1er onglet
+
+    # 1) Dates : détecte les libellés et écrit la valeur à droite
+    r, c = _find_cell_by_regex(ws, r"date\s+de\s+cr[eé]ation")
+    if r and c:
+        _write_right_of(ws, r, c, date_creation.strftime("%d/%m/%Y"))
+    r, c = _find_cell_by_regex(ws, r"date\s+de\s+rammasse|date\s+de\s+ramasse")
+    if r and c:
+        _write_right_of(ws, r, c, date_ramasse.strftime("%d/%m/%Y"))
+
+    # 2) Destinataire
+    r, c = _find_cell_by_regex(ws, r"destinataire")
+    if r and c:
+        _write_right_of(ws, r, c, destinataire_title)
+        # lignes suivantes (adresse)
+        for i, line in enumerate(destinataire_lines[:3], start=1):
+            ws.cell(row=r + i, column=c + 1).value = line
+
+    # 3) Tableau principal : repère la ligne d'en-têtes
+    headers = [
+        "Référence", "Produit", "DDM",
+        "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"
+    ]
+    hdr_row, colmap = _find_table_headers(ws, headers)
+    if not hdr_row:
+        raise KeyError("En-têtes du tableau introuvables dans le modèle Excel.")
+
+    # sécurité: si un nom attendu manque, on tente des variantes
+    def _col(name: str, *alts) -> Optional[int]:
+        if colmap.get(name) is not None:
+            return colmap[name]
+        for a in alts:
+            if colmap.get(a) is not None:
+                return colmap[a]
+        return None
+
+    c_ref   = _col("Référence")
+    c_prod  = _col("Produit")
+    c_ddm   = _col("DDM")
+    c_qc    = _col("Quantité cartons", "Quantité carton", "Qté cartons")
+    c_qp    = _col("Quantité palettes", "Qté palettes")
+    c_poids = _col("Poids palettes (kg)", "Poids palettes")
+
+    need = [c_ref, c_prod, c_ddm, c_qc, c_qp, c_poids]
+    if any(v is None for v in need):
+        raise KeyError(f"Colonnes incomplètes dans le modèle Excel: {colmap}")
+
+    # 4) Ecriture des lignes
+    row_out = hdr_row + 1
+    for _, r in df_lines.iterrows():
+        ws.cell(row=row_out, column=c_ref).value   = str(r["Référence"])
+        ws.cell(row=row_out, column=c_prod).value  = str(r["Produit (goût + format)"]).replace(" — ", " - ")
+        # DDM
+        ddm_str = str(r["DDM"])
+        # accepte "dd/mm/yyyy" en string ; si besoin, on peut parser datetime
+        ws.cell(row=row_out, column=c_ddm).value   = ddm_str
+        # nombres
+        def _int(v): 
+            try: return int(float(v))
+            except: return 0
+        ws.cell(row=row_out, column=c_qc).value    = _int(r["Quantité cartons"])
+        ws.cell(row=row_out, column=c_qp).value    = _int(r["Quantité palettes"])
+        ws.cell(row=row_out, column=c_poids).value = _int(r["Poids palettes (kg)"])
+        row_out += 1
+
+    # 5) Ligne TOTAL : cherche la cellule "TOTAL" sur la ligne suivante (sinon, on l'écrit nous-mêmes)
+    total_row = None
+    for j in range(0, 6):
+        cell = ws.cell(row=hdr_row + 1 + len(df_lines) + j, column=c_ref)
+        if str(cell.value or "").strip().upper() == "TOTAL":
+            total_row = cell.row
+            break
+
+    if total_row is None:
+        total_row = hdr_row + 1 + len(df_lines)
+        ws.cell(row=total_row, column=c_ref).value = "TOTAL"
+
+    # Totaux (côté chiffres)
+    tot_qc = int(pd.to_numeric(df_lines["Quantité cartons"], errors="coerce").fillna(0).sum())
+    tot_qp = int(pd.to_numeric(df_lines["Quantité palettes"], errors="coerce").fillna(0).sum())
+    tot_pd = int(pd.to_numeric(df_lines["Poids palettes (kg)"], errors="coerce").fillna(0).sum())
+
+    ws.cell(row=total_row, column=c_qc).value    = tot_qc
+    ws.cell(row=total_row, column=c_qp).value    = tot_qp
+    ws.cell(row=total_row, column=c_poids).value = tot_pd
+
+    # 6) Sauvegarde en mémoire
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
