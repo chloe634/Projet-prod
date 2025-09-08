@@ -518,69 +518,85 @@ def build_bl_enlevements_pdf(
     # Ligne DESTINATAIRE en multi-ligne (titre + adresse complète dans la même cellule)
     def _row_dest(label: str, title: str, lines: List[str]):
         val_text = "\n".join([title] + (lines or []))
-        # calcule la hauteur requise
         n_lines = len(pdf.multi_cell(w_val, 6, _txt(val_text), split_only=True)) or 1
         row_h = max(8, 6*n_lines)
         y0 = pdf.get_y()
-        # label (hauteur totale)
         pdf.set_xy(x_box, y0); pdf.cell(w_lbl, row_h, _txt(label), border=1)
-        # valeur multi
         pdf.set_xy(x_box + w_lbl, y0); pdf.multi_cell(w_val, 6, _txt(val_text), border=1)
-        # place le curseur au bas de la ligne
         pdf.set_xy(x_box, y0 + row_h)
 
     _row_simple("DATE DE CREATION :", date_creation.strftime("%d/%m/%Y"))
     _row_simple("DATE DE RAMMASSE :", date_ramasse.strftime("%d/%m/%Y"))
     _row_dest("DESTINATAIRE :", destinataire_title, destinataire_lines)
 
-    pdf.ln(3)
-
-    # (facultatif) une ligne centrée sous l’encadré
-    if destinataire_lines:
-        pdf.set_font("Helvetica","",11)
-        pdf.cell(0,6,_txt(destinataire_lines[0]), ln=1, align="C")
+    # ⚠️ On SUPPRIME la ligne centrée sous l'encadré (celle qui affichait "ZAC du Haut de Wissous II,")
+    # (rien ici)
 
     # ---- Tableau
-    pdf.ln(2)
+    pdf.ln(6)
     pdf.set_fill_color(230,230,230)
 
     headers = [
         "Référence",
         "Produit",
         "DDM",
-        "Quantité\ncartons",
-        "Quantité\npalettes",
-        "Poids palettes\n(kg)",
+        "Quantité cartons",
+        "Quantité palettes",
+        "Poids palettes (kg)",
     ]
-    # Largeurs : total = 180 mm
-    widths  = [24, 90, 20, 18, 16, 12]
-    line_h  = 6
 
-    # En-tête multi-ligne (calcul de la hauteur max)
+    # Largeurs de base (somme = 180 mm)
+    widths  = [22, 72, 18, 24, 24, 20]
+    header_h = 8
+    line_h   = 6
+
+    # --- Ajustement AUTO pour que chaque titre tienne sur 1 ligne ---
     pdf.set_font("Helvetica","B",10)
-    header_lines = [pdf.multi_cell(w, line_h, _txt(h), split_only=True) for h, w in zip(headers, widths)]
-    header_h = max(line_h*max(1, len(ls)) for ls in header_lines)
+    extra_needed = 0.0
+    margin_mm = 2.5  # petite marge dans les cellules
+    # On ajuste toutes sauf la colonne Produit (index 1) ; on "vole" sa largeur
+    for j, h in enumerate(headers):
+        if j == 1:  # Produit
+            continue
+        need = pdf.get_string_width(_txt(h)) + 2*margin_mm
+        if need > widths[j]:
+            extra_needed += (need - widths[j])
+            widths[j] = need
+    # On retire ce surplus à la colonne Produit, tout en lui laissant un minimum
+    widths[1] = max(60.0, widths[1] - extra_needed)
+    # Si malgré tout il manque encore, on grignote un peu "Référence" et "DDM"
+    total = sum(widths)
+    if total > 180.0:
+        overflow = total - 180.0
+        for j in (0, 2):
+            take = min(overflow/2, max(0.0, widths[j]-16.0))  # garde min 16 mm
+            widths[j] -= take
+            overflow -= take
+        if overflow > 0:
+            # dernier recours : on rogne très légèrement Produit
+            widths[1] = max(58.0, widths[1] - overflow)
 
-    # dessine l'en-tête
+    # Dessin de l'en-tête (1 ligne, pas de wrap)
     x = left; y = pdf.get_y()
     for h, w in zip(headers, widths):
         pdf.set_xy(x, y)
-        pdf.multi_cell(w, line_h, _txt(h), border=1, align="C", fill=True, max_line_height=line_h)
+        pdf.cell(w, header_h, _txt(h), border=1, align="C", fill=True)
         x += w
     pdf.set_xy(left, y + header_h)
 
-    # lignes
+    # Lignes du tableau
     pdf.set_font("Helvetica","",10)
     tot_cart = tot_pal = tot_poids = 0
     def _maybe_break(h):
-        if pdf.will_page_break(h):
+        if pdf.will_page_break(h + header_h):
             pdf.add_page()
-            # reimprimer l'en-tête
+            # réimprime l'en-tête
+            pdf.set_fill_color(230,230,230)
             pdf.set_font("Helvetica","B",10)
             x = left; y = pdf.get_y()
             for h, w in zip(headers, widths):
                 pdf.set_xy(x, y)
-                pdf.multi_cell(w, line_h, _txt(h), border=1, align="C", fill=True, max_line_height=line_h)
+                pdf.cell(w, header_h, _txt(h), border=1, align="C", fill=True)
                 x += w
             pdf.set_xy(left, y + header_h)
             pdf.set_font("Helvetica","",10)
@@ -615,6 +631,3 @@ def build_bl_enlevements_pdf(
     pdf.cell(widths[5], 8, _txt(f"{tot_poids:,}".replace(","," ")), border=1, align="C")
 
     return bytes(pdf.output(dest="S"))
-
-
-
