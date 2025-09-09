@@ -212,6 +212,7 @@ def _first_data_row_after_header(ws, hdr_row: int, cols: List[int]) -> int:
             if any(rng.min_col <= c <= rng.max_col for c in cols if c is not None):
                 start = max(start, rng.max_row + 1)
     return start
+
 def fill_bl_enlevements_xlsx(
     template_path: str,
     date_creation: date,
@@ -246,54 +247,124 @@ def fill_bl_enlevements_xlsx(
     if r and c:
         _write_right_of(ws, r, c, date_ramasse.strftime("%d/%m/%Y"))
 
-    # ----- 2) Destinataire -----
+    # ----- 2) Destinataire (adresse DANS l'encadré, multi-lignes) -----
+    from openpyxl.styles import Alignment
+
     r, c = _find_cell_by_regex(ws, r"destinataire")
     if r and c:
-        _write_right_of(ws, r, c, destinataire_title)
-        for i, line in enumerate(destinataire_lines[:3], start=1):
-            ws.cell(row=r + i, column=c + 1).value = line
+        # cherche une fusion à droite du libellé
+        target_rng = None
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= r <= rng.max_row and rng.min_col > c:
+                if target_rng is None or rng.min_col < target_rng.min_col:
+                    target_rng = rng
 
-    # ----- 3) En-têtes du tableau (tolérant) -----
-    hdr_row, _ = _find_table_headers(ws, [
-        "Référence", "Produit", "DDM",
-        "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"
-    ])
+        if target_rng:
+            rr, cc = target_rng.min_row, target_rng.min_col
+            rr_end, cc_end = target_rng.max_row, target_rng.max_col
+        else:
+            # crée une fusion (3 lignes x 6 colonnes) à droite du libellé
+            rr, cc = r, c + 1
+            rr_end = min(r + 2, ws.max_row)
+            cc_end = min(c + 6, ws.max_column)
+            try:
+                ws.merge_cells(start_row=rr, start_column=cc, end_row=rr_end, end_column=cc_end)
+            except Exception:
+                pass  # si déjà partiellement fusionné, on écrira en haut-gauche
+
+        text_lines = [destinataire_title] + (destinataire_lines or [])
+        text = "\n".join([str(x).strip() for x in text_lines if str(x).strip()])
+        _safe_set_cell(ws, rr, cc, text)
+        anchor = ws.cell(row=rr, column=cc)
+        anchor.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # ajuste la hauteur des lignes de la zone
+        n_lines = max(1, text.count("\n") + 1)
+        span_rows = max(1, (rr_end - rr + 1))
+        per_row_height = 14 * n_lines / span_rows
+        for rset in range(rr, rr_end + 1):
+            cur = ws.row_dimensions[rset].height or 0
+            ws.row_dimensions[rset].height = max(cur, per_row_height)
+
+        # nettoyage éventuel d'une ligne parasite ailleurs
+        zr, zc = _find_cell_by_regex(ws, r"zac\s+du\s+haut\s+de\s+wissous")
+        if zr and zc:
+            _safe_set_cell(ws, zr, zc, "")
+
+    # ----- 3) En-têtes du tableau (détection robuste) -----
+    def _norm(x): return _normalize_header_text(x)
+
+    SYN = {
+        "ref":   ["référence", "reference"],
+        "prod":  ["produit", "produit (gout + format)", "produit gout format"],
+        "ddm":   ["ddm", "date de durabilite", "date de durabilité"],
+        "q_cart":["quantité cartons", "quantite cartons", "n° cartons", "nb cartons", "no cartons"],
+        "q_pal": ["quantité palettes", "quantite palettes", "n° palettes", "nb palettes", "no palettes"],
+        "poids": ["poids palettes (kg)", "poids palettes", "poids (kg)"],
+    }
+
+    def _row_tokens(rw):
+        maxc = min(ws.max_column, 120)
+        return [_norm(ws.cell(row=rw, column=j).value) for j in range(1, maxc+1)]
+
+    def _find_header_row():
+        best = (0, None, None)  # hits, row, tokens
+        for rw in range(1, min(ws.max_row, 200)+1):
+            toks = _row_tokens(rw)
+            has_ref = any(t in SYN["ref"] for t in toks)
+            has_ddm = any(t in SYN["ddm"] for t in toks)
+            if has_ref and has_ddm:
+                bonus = sum(any(any(s in t for s in SYN[k]) for t in toks) for k in ("q_cart","q_pal","poids"))
+                return rw, toks, bonus
+            hit = sum(any(any(s in t for s in SYN[k]) for t in toks) for k in ("ref","prod","ddm","q_cart","q_pal","poids"))
+            if hit > best[0]:
+                best = (hit, rw, toks)
+        return best[1], best[2], 0
+
+    hdr_row, hdr_toks, _ = _find_header_row()
     if not hdr_row:
         raise KeyError("Ligne d’en-têtes du tableau introuvable dans le modèle Excel.")
 
-    header_vals = [ws.cell(row=hdr_row, column=j).value for j in range(1, ws.max_column + 1)]
-
-    def _match_header(target: str, contains: bool=False) -> int | None:
-        t = _normalize_header_text(target)
-        for j, v in enumerate(header_vals, start=1):
-            h = _normalize_header_text(v)
-            if (contains and t in h) or (not contains and t == h):
+    def _find_col(targ_keys):
+        """colonne dont le texte correspond à l’un des synonymes"""
+        maxc = min(ws.max_column, 120)
+        wanted = [w for k in targ_keys for w in SYN[k]]
+        for j in range(1, maxc+1):
+            hv = _norm(ws.cell(row=hdr_row, column=j).value)
+            if hv in wanted or any(w in hv for w in wanted if len(w) >= 3):
                 return j
         return None
 
-    c_ref   = _match_header("référence") or _match_header("reference")
-    c_prod  = (_match_header("produit")
-               or _match_header("produit (gout + format)", contains=True)
-               or _match_header("produit gout format", contains=True))
-    c_ddm   = _match_header("ddm") or _match_header("date de durabilite", contains=True)
-    c_qc    = _match_header("quantité cartons") or _match_header("quantite cartons")
-    c_qp    = _match_header("quantité palettes") or _match_header("quantite palettes")
-    c_poids = (_match_header("poids palettes (kg)")
-               or _match_header("poids palettes")
-               or _match_header("poids (kg)"))
+    c_ref   = _find_col(["ref"])
+    c_prod  = _find_col(["prod"])
+    c_ddm   = _find_col(["ddm"])
+    c_qc    = _find_col(["q_cart"])
+    c_qp    = _find_col(["q_pal"])
+    c_poids = _find_col(["poids"])
 
-    # fallback : Produit entre Réf et DDM
-    if c_prod is None and c_ref is not None and c_ddm is not None and c_ddm > c_ref:
-        if (c_ddm - c_ref) >= 2:
-            c_prod = c_ref + 1
+    # Fallbacks positionnels autour de "Produit"
+    def _clamp_col(j: int | None) -> int | None:
+        if j is None: return None
+        return max(1, min(int(j), ws.max_column))
+
+    if c_prod is not None:
+        if c_ref is None:   c_ref = c_prod - 1
+        if c_ddm is None:   c_ddm = c_prod + 1
+        if c_qc  is None:   c_qc  = (c_ddm or (c_prod + 1)) + 1
+        if c_qp  is None:   c_qp  = (c_qc or ((c_ddm or (c_prod + 1)) + 1)) + 1
+        if c_poids is None: c_poids = (c_qp or (((c_ddm or (c_prod + 1)) + 1) + 1)) + 1
+
+    # clamp dans les bornes
+    c_ref   = _clamp_col(c_ref)
+    c_prod  = _clamp_col(c_prod)
+    c_ddm   = _clamp_col(c_ddm)
+    c_qc    = _clamp_col(c_qc)
+    c_qp    = _clamp_col(c_qp)
+    c_poids = _clamp_col(c_poids)
 
     need = {
-        "Référence": c_ref,
-        "Produit": c_prod,
-        "DDM": c_ddm,
-        "Quantité cartons": c_qc,
-        "Quantité palettes": c_qp,
-        "Poids palettes (kg)": c_poids,
+        "Référence": c_ref, "Produit": c_prod, "DDM": c_ddm,
+        "Quantité cartons": c_qc, "Quantité palettes": c_qp, "Poids palettes (kg)": c_poids
     }
     if any(v is None for v in need.values()):
         raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
