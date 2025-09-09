@@ -238,7 +238,13 @@ def _find_cell_by_regex(ws, pattern: str) -> Tuple[int, int] | Tuple[None, None]
     return None, None
 
 def _write_right_of(ws, row: int, col: int, value):
-    ws.cell(row=row, column=col + 1).value = value
+    r, c = row, col + 1
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
+            r, c = rng.min_row, rng.min_col
+            break
+    ws.cell(row=r, column=c).value = value
+
 
 def _normalize_header_text(s: str) -> str:
     s = str(s or "").strip().lower()
@@ -298,6 +304,13 @@ def _find_table_headers(ws, targets: List[str]) -> Tuple[int | None, Dict[str, i
 
     return best_row, best_map
 
+# helper: écrit dans la cellule (row,col) en visant l'ancre si c'est une fusion
+def _write_cell(ws, row: int, col: int, value):
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+            row, col = rng.min_row, rng.min_col
+            break
+    ws.cell(row=row, column=col).value = value
 
 def fill_bl_enlevements_xlsx(
     template_path: str,
@@ -476,7 +489,8 @@ def fill_bl_enlevements_xlsx(
     c_poids = colmap["Poids palettes (kg)"]
 
     # Force l'étiquette "Produit" visible dans le modèle
-    ws.cell(row=hdr_row, column=c_prod).value = "Produit"
+    _write_cell(ws, hdr_row, c_prod, "Produit")
+
 
 
     # ----- 4) Normalisation DF d'entrée -----
