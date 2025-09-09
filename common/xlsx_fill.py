@@ -270,8 +270,8 @@ def fill_bl_enlevements_xlsx(
         "ref":   ["référence", "reference"],
         "prod":  ["produit", "produit (gout + format)", "produit gout format"],
         "ddm":   ["ddm", "date de durabilite", "date de durabilité"],
-        "q_cart":["quantité cartons", "quantite cartons", "n° cartons", "no cartons", "nb cartons"],
-        "q_pal": ["quantité palettes", "quantite palettes", "n° palettes", "no palettes", "nb palettes"],
+        "q_cart":["quantité cartons", "quantite cartons", "Nb cartons", "no cartons", "nb cartons"],
+        "q_pal": ["quantité palettes", "quantite palettes", "Nb palettes", "no palettes", "nb palettes"],
         "poids": ["poids palettes (kg)", "poids palettes", "poids (kg)"],
     }
 
@@ -493,8 +493,8 @@ def build_bl_enlevements_pdf(
         "Référence",
         "Produit",
         "DDM",
-        "N° cartons",
-        "N° palettes",
+        "Nb cartons",
+        "Nb palettes",
         "Poids (kg)",
     ]
 
@@ -553,8 +553,8 @@ def build_bl_enlevements_pdf(
         ref = _txt(r.get("Référence", ""))
         prod = _txt(r.get("Produit", ""))
         ddm = _txt(r.get("DDM", ""))
-        qc = _ival(r.get("N° cartons", r.get("Quantité cartons", 0)));   tot_cart += qc
-        qp = _ival(r.get("N° palettes", r.get("Quantité palettes", 0)));  tot_pal  += qp
+        qc = _ival(r.get("Nb cartons", r.get("Quantité cartons", 0)));   tot_cart += qc
+        qp = _ival(r.get("Nb palettes", r.get("Quantité palettes", 0)));  tot_pal  += qp
         po = _ival(r.get("Poids (kg)",  r.get("Poids palettes (kg)", 0))); tot_poids += po
 
         prod_lines = pdf.multi_cell(widths[1], line_h, prod, split_only=True)
