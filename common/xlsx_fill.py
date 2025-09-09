@@ -443,17 +443,46 @@ def fill_bl_enlevements_xlsx(
                 return j
         return None
 
-    c_ref   = _find_col(["ref"])
-    c_prod  = _find_col(["prod"])
-    c_ddm   = _find_col(["ddm"])
-    c_qc    = _find_col(["q_cart"])
-    c_qp    = _find_col(["q_pal"])
-    c_poids = _find_col(["poids"])
+c_ref   = _find_col(["ref"])
+c_prod  = _find_col(["prod"])
+c_ddm   = _find_col(["ddm"])
+c_qc    = _find_col(["q_cart"])
+c_qp    = _find_col(["q_pal"])
+c_poids = _find_col(["poids"])
 
-    need = {"Référence": c_ref, "Produit": c_prod, "DDM": c_ddm, "Quantité cartons": c_qc,
-            "Quantité palettes": c_qp, "Poids palettes (kg)": c_poids}
-    if any(v is None for v in need.values()):
-        raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
+# --- Positional fallbacks around "Produit" (model order) -----------------
+def _clamp_col(j: int | None) -> int | None:
+    if j is None: return None
+    return max(1, min(int(j), ws.max_column))
+
+if c_prod is not None:
+    # Référence is immediately to the left
+    if c_ref is None:   c_ref = c_prod - 1
+    # DDM immediately to the right
+    if c_ddm is None:   c_ddm = c_prod + 1
+    # Then Quantité cartons, Quantité palettes, Poids palettes (kg)
+    if c_qc  is None:   c_qc  = (c_ddm or (c_prod + 1)) + 1
+    if c_qp  is None:   c_qp  = (c_qc or ((c_ddm or (c_prod + 1)) + 1)) + 1
+    if c_poids is None: c_poids = (c_qp or (((c_ddm or (c_prod + 1)) + 1) + 1)) + 1
+
+# clamp to sheet bounds
+c_ref   = _clamp_col(c_ref)
+c_prod  = _clamp_col(c_prod)
+c_ddm   = _clamp_col(c_ddm)
+c_qc    = _clamp_col(c_qc)
+c_qp    = _clamp_col(c_qp)
+c_poids = _clamp_col(c_poids)
+
+need = {
+    "Référence": c_ref, "Produit": c_prod, "DDM": c_ddm,
+    "Quantité cartons": c_qc, "Quantité palettes": c_qp, "Poids palettes (kg)": c_poids
+}
+if any(v is None for v in need.values()):
+    raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
+
+# (optionnel) si tu veux afficher explicitement "Produit" sur la ligne d’en-tête :
+# _write_cell(ws, hdr_row, c_prod, "Produit")
+
 
     # (optionnel, à réactiver une fois que tu constates que hdr_row est correct)
     # _write_cell(ws, hdr_row, c_prod, "Produit")
