@@ -219,18 +219,11 @@ def fill_bl_enlevements_xlsx(
     date_ramasse: date,
     destinataire_title: str,
     destinataire_lines: List[str],
-    df_lines: pd.DataFrame,   # colonnes attendues (ordre libre) cf. ci-dessous
+    df_lines: pd.DataFrame,
 ) -> bytes:
     """
-    Remplit le modèle XLSX 'LOG_EN_001_01 BL enlèvements Sofripa-2.xlsx'.
-
-    df_lines doit contenir les colonnes (noms exacts ou équivalents) :
-      - 'Référence'
-      - 'Produit (goût + format)' ou 'Produit'
-      - 'DDM'
-      - 'Quantité cartons'
-      - 'Quantité palettes'
-      - 'Poids palettes (kg)'
+    Remplit le modèle XLSX 'LOG_EN_001_01 BL enlèvements Sofripa-2.xlsx'
+    de façon ANCRÉE sur la rangée d'en-têtes réelle (séquence contiguë).
     """
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"Modèle Excel introuvable: {template_path}")
@@ -238,21 +231,85 @@ def fill_bl_enlevements_xlsx(
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
 
-    # ----- 1) Dates -----
+    # ---------- utilitaires locaux ----------
+    from openpyxl.styles import Alignment
+
+    def _safe_write(ws, row: int, col: int, value):
+        """Écrit en visant l'ancre si la cible est dans une fusion (évite MergedCell)."""
+        r, c = row, col
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
+                r, c = rng.min_row, rng.min_col
+                break
+        ws.cell(row=r, column=c).value = value
+
+    def _norm(s: str) -> str:
+        s = str(s or "").strip().lower()
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        s = s.replace("’", "'")
+        for ch in ("(", ")", ":", ";", ","):
+            s = s.replace(ch, " ")
+        return " ".join(s.split())
+
+    def _find_header_run(ws):
+        """
+        Trouve la **séquence contiguë et complète** des 6 en-têtes
+        et renvoie (row, [c_ref,c_prod,c_ddm,c_qc,c_qp,c_poids]).
+        On garde la **plus basse** de la feuille.
+        """
+        SEQ = [
+            ["référence", "reference"],
+            ["produit", "produit (gout + format)", "produit gout format"],
+            ["ddm", "date de durabilite", "date de durabilité"],
+            ["quantité cartons", "quantite cartons", "n° cartons", "no cartons", "nb cartons"],
+            ["quantité palettes", "quantite palettes", "n° palettes", "no palettes", "nb palettes"],
+            ["poids palettes (kg)", "poids palettes", "poids (kg)"],
+        ]
+        SEQ = [[_norm(x) for x in alts] for alts in SEQ]
+
+        maxr = min(ws.max_row, 300)
+        maxc = min(ws.max_column, 120)
+        best = None  # (row, cols)
+
+        for r in range(1, maxr + 1):
+            # on parcourt les fenêtres contiguës de 6 cellules
+            for c0 in range(1, maxc - 6 + 2):
+                ok = True
+                cols = []
+                for k in range(6):
+                    hv = _norm(ws.cell(row=r, column=c0 + k).value)
+                    if hv not in SEQ[k]:
+                        ok = False
+                        break
+                    cols.append(c0 + k)
+                if ok:
+                    # on garde la plus basse (si plusieurs zones existent)
+                    best = (r, cols)
+        return best
+
+    # ---------- 1) Dates ----------
+    def _find_cell_by_regex(ws, pattern: str):
+        rx = re.compile(pattern, flags=re.I)
+        for row in ws.iter_rows(values_only=False):
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and rx.search(v):
+                    return cell.row, cell.column
+        return None, None
+
     r, c = _find_cell_by_regex(ws, r"date\s+de\s+cr[eé]ation")
     if r and c:
-        _write_right_of(ws, r, c, date_creation.strftime("%d/%m/%Y"))
+        _safe_write(ws, r, c + 1, date_creation.strftime("%d/%m/%Y"))
 
     r, c = _find_cell_by_regex(ws, r"date\s+de\s+rammasse|date\s+de\s+ramasse")
     if r and c:
-        _write_right_of(ws, r, c, date_ramasse.strftime("%d/%m/%Y"))
+        _safe_write(ws, r, c + 1, date_ramasse.strftime("%d/%m/%Y"))
 
-    # ----- 2) Destinataire (adresse DANS l'encadré, multi-lignes) -----
-    from openpyxl.styles import Alignment
-
+    # ---------- 2) Destinataire (dans l'encadré, multi-lignes) ----------
     r, c = _find_cell_by_regex(ws, r"destinataire")
     if r and c:
-        # cherche une fusion à droite du libellé
+        # essaie de réutiliser une fusion à droite du libellé
         target_rng = None
         for rng in ws.merged_cells.ranges:
             if rng.min_row <= r <= rng.max_row and rng.min_col > c:
@@ -263,120 +320,45 @@ def fill_bl_enlevements_xlsx(
             rr, cc = target_rng.min_row, target_rng.min_col
             rr_end, cc_end = target_rng.max_row, target_rng.max_col
         else:
-            # crée une fusion (3 lignes x 6 colonnes) à droite du libellé
+            # crée une petite fusion 3x6 à droite si rien n'existe
             rr, cc = r, c + 1
-            rr_end = min(r + 2, ws.max_row)
-            cc_end = min(c + 6, ws.max_column)
+            rr_end, cc_end = min(r + 2, ws.max_row), min(c + 6, ws.max_column)
             try:
                 ws.merge_cells(start_row=rr, start_column=cc, end_row=rr_end, end_column=cc_end)
             except Exception:
-                pass  # si déjà partiellement fusionné, on écrira en haut-gauche
+                pass
 
-        text_lines = [destinataire_title] + (destinataire_lines or [])
-        text = "\n".join([str(x).strip() for x in text_lines if str(x).strip()])
-        _safe_set_cell(ws, rr, cc, text)
-        anchor = ws.cell(row=rr, column=cc)
-        anchor.alignment = Alignment(wrap_text=True, vertical="top")
+        text = "\n".join([destinataire_title] + [x for x in (destinataire_lines or []) if str(x).strip()])
+        _safe_write(ws, rr, cc, text)
+        a = ws.cell(row=rr, column=cc).alignment or Alignment()
+        ws.cell(row=rr, column=cc).alignment = Alignment(wrap_text=True, vertical="top", horizontal=a.horizontal or "left")
 
-        # ajuste la hauteur des lignes de la zone
+        # ajuste la hauteur des lignes fusionnées pour afficher l'adresse
         n_lines = max(1, text.count("\n") + 1)
-        span_rows = max(1, (rr_end - rr + 1))
-        per_row_height = 14 * n_lines / span_rows
+        span = max(1, rr_end - rr + 1)
+        per_row = 14 * n_lines / span
         for rset in range(rr, rr_end + 1):
             cur = ws.row_dimensions[rset].height or 0
-            ws.row_dimensions[rset].height = max(cur, per_row_height)
+            ws.row_dimensions[rset].height = max(cur, per_row)
 
-        # nettoyage éventuel d'une ligne parasite ailleurs
+        # nettoie la ligne parasite si elle traîne en dehors de l'encadré
         zr, zc = _find_cell_by_regex(ws, r"zac\s+du\s+haut\s+de\s+wissous")
-        if zr and zc:
-            _safe_set_cell(ws, zr, zc, "")
+        if zr and zc and (zr < rr or zr > rr_end or zc < cc or zc > cc_end):
+            _safe_write(ws, zr, zc, "")
 
-    # ----- 3) En-têtes du tableau (détection robuste) -----
-    def _norm(x): return _normalize_header_text(x)
+    # ---------- 3) Localisation **fiable** de la ligne d’en-têtes ----------
+    header = _find_header_run(ws)
+    if not header:
+        raise KeyError("Impossible de localiser la rangée d’en-têtes (séquence complète non trouvée).")
+    hdr_row, (c_ref, c_prod, c_ddm, c_qc, c_qp, c_poids) = header
 
-    SYN = {
-        "ref":   ["référence", "reference"],
-        "prod":  ["produit", "produit (gout + format)", "produit gout format"],
-        "ddm":   ["ddm", "date de durabilite", "date de durabilité"],
-        "q_cart":["quantité cartons", "quantite cartons", "n° cartons", "nb cartons", "no cartons"],
-        "q_pal": ["quantité palettes", "quantite palettes", "n° palettes", "nb palettes", "no palettes"],
-        "poids": ["poids palettes (kg)", "poids palettes", "poids (kg)"],
-    }
-
-    def _row_tokens(rw):
-        maxc = min(ws.max_column, 120)
-        return [_norm(ws.cell(row=rw, column=j).value) for j in range(1, maxc+1)]
-
-    def _find_header_row():
-        best = (0, None, None)  # hits, row, tokens
-        for rw in range(1, min(ws.max_row, 200)+1):
-            toks = _row_tokens(rw)
-            has_ref = any(t in SYN["ref"] for t in toks)
-            has_ddm = any(t in SYN["ddm"] for t in toks)
-            if has_ref and has_ddm:
-                bonus = sum(any(any(s in t for s in SYN[k]) for t in toks) for k in ("q_cart","q_pal","poids"))
-                return rw, toks, bonus
-            hit = sum(any(any(s in t for s in SYN[k]) for t in toks) for k in ("ref","prod","ddm","q_cart","q_pal","poids"))
-            if hit > best[0]:
-                best = (hit, rw, toks)
-        return best[1], best[2], 0
-
-    hdr_row, hdr_toks, _ = _find_header_row()
-    if not hdr_row:
-        raise KeyError("Ligne d’en-têtes du tableau introuvable dans le modèle Excel.")
-
-    def _find_col(targ_keys):
-        """colonne dont le texte correspond à l’un des synonymes"""
-        maxc = min(ws.max_column, 120)
-        wanted = [w for k in targ_keys for w in SYN[k]]
-        for j in range(1, maxc+1):
-            hv = _norm(ws.cell(row=hdr_row, column=j).value)
-            if hv in wanted or any(w in hv for w in wanted if len(w) >= 3):
-                return j
-        return None
-
-    c_ref   = _find_col(["ref"])
-    c_prod  = _find_col(["prod"])
-    c_ddm   = _find_col(["ddm"])
-    c_qc    = _find_col(["q_cart"])
-    c_qp    = _find_col(["q_pal"])
-    c_poids = _find_col(["poids"])
-
-    # Fallbacks positionnels autour de "Produit"
-    def _clamp_col(j: int | None) -> int | None:
-        if j is None: return None
-        return max(1, min(int(j), ws.max_column))
-
-    if c_prod is not None:
-        if c_ref is None:   c_ref = c_prod - 1
-        if c_ddm is None:   c_ddm = c_prod + 1
-        if c_qc  is None:   c_qc  = (c_ddm or (c_prod + 1)) + 1
-        if c_qp  is None:   c_qp  = (c_qc or ((c_ddm or (c_prod + 1)) + 1)) + 1
-        if c_poids is None: c_poids = (c_qp or (((c_ddm or (c_prod + 1)) + 1) + 1)) + 1
-
-    # clamp dans les bornes
-    c_ref   = _clamp_col(c_ref)
-    c_prod  = _clamp_col(c_prod)
-    c_ddm   = _clamp_col(c_ddm)
-    c_qc    = _clamp_col(c_qc)
-    c_qp    = _clamp_col(c_qp)
-    c_poids = _clamp_col(c_poids)
-
-    need = {
-        "Référence": c_ref, "Produit": c_prod, "DDM": c_ddm,
-        "Quantité cartons": c_qc, "Quantité palettes": c_qp, "Poids palettes (kg)": c_poids
-    }
-    if any(v is None for v in need.values()):
-        raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
-
-
-    # ----- 4) Normalisation DF d'entrée -----
+    # ---------- 4) DataFrame d'entrée : normalisation ----------
     df = df_lines.copy()
     if "Produit" not in df.columns and "Produit (goût + format)" in df.columns:
         df = df.rename(columns={"Produit (goût + format)": "Produit"})
 
     def _to_ddm_val(x):
-        if isinstance(x, (date, )):
+        if isinstance(x, date):
             return x.strftime("%d/%m/%Y")
         s = str(x or "").strip()
         if not s:
@@ -388,12 +370,6 @@ def fill_bl_enlevements_xlsx(
         except Exception:
             return s
 
-    # ----- 5) Première ligne de données = après les fusions d'en-tête -----
-    data_start = _first_data_row_after_header(ws, hdr_row, [c_ref, c_prod, c_ddm, c_qc, c_qp, c_poids])
-
-    # ----- 6) Écriture des lignes (via _safe_set_cell) -----
-    row = data_start
-
     def _as_int(v) -> int:
         try:
             f = float(v)
@@ -401,19 +377,22 @@ def fill_bl_enlevements_xlsx(
         except Exception:
             return 0
 
+    # ---------- 5) Écriture des lignes (ancrée) ----------
+    row = hdr_row + 1
     for _, r in df.iterrows():
-        _write_cell(ws, row, c_ref,   str(r.get("Référence", "")))
-        _write_cell(ws, row, c_prod,  str(r.get("Produit", "")))
-        _write_cell(ws, row, c_ddm,   _to_ddm_val(r.get("DDM", "")))
-        _write_cell(ws, row, c_qc,    _as_int(r.get("Quantité cartons", 0)))
-        _write_cell(ws, row, c_qp,    _as_int(r.get("Quantité palettes", 0)))
-        _write_cell(ws, row, c_poids, _as_int(r.get("Poids palettes (kg)", 0)))
+        _safe_write(ws, row, c_ref,   str(r.get("Référence", "")))
+        _safe_write(ws, row, c_prod,  str(r.get("Produit", "")))
+        _safe_write(ws, row, c_ddm,   _to_ddm_val(r.get("DDM", "")))
+        _safe_write(ws, row, c_qc,    _as_int(r.get("Quantité cartons", 0)))
+        _safe_write(ws, row, c_qp,    _as_int(r.get("Quantité palettes", 0)))
+        _safe_write(ws, row, c_poids, _as_int(r.get("Poids palettes (kg)", 0)))
         row += 1
 
-    # ----- 7) Sauvegarde -----
+    # ---------- 6) Sauvegarde ----------
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
+
 
 # =======================  PDF BL enlèvements (fpdf2)  =======================
 
