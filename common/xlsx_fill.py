@@ -78,24 +78,59 @@ def _agg_from_dfmin(df_min: pd.DataFrame, gout: str) -> Dict[str, Dict[str, int]
 
     return out
 
-# ----------- Helper écriture tolérante aux fusions -----------
-def _set(ws, addr: str, value, number_format: str | None = None):
-    row, col = coordinate_to_tuple(addr)
+# ======================================================================
+#                   Outils sûrs d’écriture Excel (fusions)
+# ======================================================================
+
+def _safe_set_cell(ws, row: int, col: int, value, number_format: str | None = None):
+    """
+    Écrit une valeur *même si* (row,col) tombe dans une cellule fusionnée.
+    - Si (row,col) est l'ancre: écrit directement.
+    - Si c'est à l'intérieur d'une fusion (pas l'ancre): on unmerge -> écrit à l'ancre -> remerge.
+    Neutralise 'MergedCell ... value is read-only'.
+    """
+    hit = None
     for rng in ws.merged_cells.ranges:
         if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
-            row, col = rng.min_row, rng.min_col
+            hit = rng
             break
-    cell = ws.cell(row=row, column=col)
+
+    if hit is None:
+        cell = ws.cell(row=row, column=col)
+        cell.value = value
+        if number_format:
+            cell.number_format = number_format
+        return
+
+    a_row, a_col = hit.min_row, hit.min_col
+    coord = hit.coord  # ex: "C12:H14"
+    # si on est déjà sur l'ancre, pas besoin de dé-fusionner
+    if row == a_row and col == a_col:
+        cell = ws.cell(row=a_row, column=a_col)
+        cell.value = value
+        if number_format:
+            cell.number_format = number_format
+        return
+
+    # sinon on force
+    ws.unmerge_cells(coord)
+    cell = ws.cell(row=a_row, column=a_col)
     cell.value = value
     if number_format:
         cell.number_format = number_format
+    ws.merge_cells(coord)
+
+# Ecrit via adresse A1 ("D10" …) en gérant les fusions
+def _set(ws, addr: str, value, number_format: str | None = None):
+    row, col = coordinate_to_tuple(addr)
+    _safe_set_cell(ws, row, col, value, number_format)
     return f"{get_column_letter(col)}{row}"
 
 def _addr(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
 
 # ======================================================================
-#     Fiche de prod 7000L (existante dans ton repo) — inchangée
+#     Fiche de prod 7000L — (laisse tel quel si tu l’utilises)
 # ======================================================================
 
 def fill_fiche_7000L_xlsx(
@@ -119,20 +154,13 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         raise KeyError(f"Feuille cible introuvable. Feuilles présentes : {wb.sheetnames}")
 
-    # En-têtes
+    # En-têtes (exemple)
     _set(ws, "D8", gout1 or "")
     _set(ws, "T8", gout2 or "")
     _set(ws, "D10", ddm, number_format="DD/MM/YYYY")
     _set(ws, "O10", ddm.strftime("%d%m%Y"))
     ferment_date = ddm - relativedelta(years=1)
     _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
-
-    # Localisation des blocs
-    # (fonctions associées supprimées ici pour clarté — inchangées dans ton projet)
-    # =====================================================================
-    # Si tu as besoin de _locate_quantity_blocks, laisse-le tel quel dans
-    # ta version précédente — il n'affecte pas la partie BL Sofripa.
-    # =====================================================================
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -141,8 +169,6 @@ def fill_fiche_7000L_xlsx(
 # ======================================================================
 #                   Remplissage BL enlèvements Sofripa
 # ======================================================================
-
-# --- Helpers dédiés au modèle BL Sofripa ---
 
 def _iter_cells(ws):
     for r in ws.iter_rows(values_only=False):
@@ -158,21 +184,12 @@ def _find_cell_by_regex(ws, pattern: str) -> Tuple[int, int] | Tuple[None, None]
     return None, None
 
 def _write_right_of(ws, row: int, col: int, value):
-    """Écrit dans la cellule immédiatement à droite (ancre si fusion)."""
-    r, c = row, col + 1
-    for rng in ws.merged_cells.ranges:
-        if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
-            r, c = rng.min_row, rng.min_col
-            break
-    ws.cell(row=r, column=c).value = value
+    """Écrit dans la cellule immédiatement à droite (gère fusions)."""
+    _safe_set_cell(ws, row, col + 1, value)
 
-# helper: écrit dans la cellule (row,col) en visant l'ancre si c'est une fusion
 def _write_cell(ws, row: int, col: int, value):
-    for rng in ws.merged_cells.ranges:
-        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
-            row, col = rng.min_row, rng.min_col
-            break
-    ws.cell(row=row, column=col).value = value
+    """Écrit (row,col) en gérant les fusions."""
+    _safe_set_cell(ws, row, col, value)
 
 def _normalize_header_text(s: str) -> str:
     s = str(s or "").strip().lower()
@@ -183,6 +200,18 @@ def _normalize_header_text(s: str) -> str:
         s = s.replace(ch, " ")
     s = " ".join(s.split())
     return s
+
+def _first_data_row_after_header(ws, hdr_row: int, cols: List[int]) -> int:
+    """
+    Si l'en-tête est fusionné sur 2+ lignes, commence à la 1ère ligne
+    *après* ces fusions sur n'importe laquelle des colonnes du tableau.
+    """
+    start = hdr_row + 1
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= hdr_row <= rng.max_row:
+            if any(rng.min_col <= c <= rng.max_col for c in cols if c is not None):
+                start = max(start, rng.max_row + 1)
+    return start
 
 def fill_bl_enlevements_xlsx(
     template_path: str,
@@ -243,12 +272,11 @@ def fill_bl_enlevements_xlsx(
             except Exception:
                 pass  # si déjà partiellement fusionné, on écrira en haut-gauche
 
-        cell = ws.cell(row=rr, column=cc)
-
-        lines = [destinataire_title] + (destinataire_lines or [])
-        text = "\n".join([str(x).strip() for x in lines if str(x).strip()])
-        cell.value = text
-        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        text_lines = [destinataire_title] + (destinataire_lines or [])
+        text = "\n".join([str(x).strip() for x in text_lines if str(x).strip()])
+        _safe_set_cell(ws, rr, cc, text)
+        anchor = ws.cell(row=rr, column=cc)
+        anchor.alignment = Alignment(wrap_text=True, vertical="top")
 
         # ajuste la hauteur des lignes de la zone
         n_lines = max(1, text.count("\n") + 1)
@@ -261,7 +289,7 @@ def fill_bl_enlevements_xlsx(
         # nettoyage éventuel d'une ligne parasite ailleurs
         zr, zc = _find_cell_by_regex(ws, r"zac\s+du\s+haut\s+de\s+wissous")
         if zr and zc:
-            ws.cell(row=zr, column=zc).value = ""
+            _safe_set_cell(ws, zr, zc, "")
 
     # ----- 3) En-têtes du tableau (détection robuste) -----
     def _norm(x): return _normalize_header_text(x)
@@ -270,8 +298,8 @@ def fill_bl_enlevements_xlsx(
         "ref":   ["référence", "reference"],
         "prod":  ["produit", "produit (gout + format)", "produit gout format"],
         "ddm":   ["ddm", "date de durabilite", "date de durabilité"],
-        "q_cart":["quantité cartons", "quantite cartons", "Nb cartons", "no cartons", "nb cartons"],
-        "q_pal": ["quantité palettes", "quantite palettes", "Nb palettes", "no palettes", "nb palettes"],
+        "q_cart":["quantité cartons", "quantite cartons", "n° cartons", "nb cartons", "no cartons"],
+        "q_pal": ["quantité palettes", "quantite palettes", "n° palettes", "nb palettes", "no palettes"],
         "poids": ["poids palettes (kg)", "poids palettes", "poids (kg)"],
     }
 
@@ -359,8 +387,11 @@ def fill_bl_enlevements_xlsx(
         except Exception:
             return s
 
-    # ----- 5) Écriture des lignes -----
-    row = hdr_row + 1
+    # ----- 5) Première ligne de données = après les fusions d'en-tête -----
+    data_start = _first_data_row_after_header(ws, hdr_row, [c_ref, c_prod, c_ddm, c_qc, c_qp, c_poids])
+
+    # ----- 6) Écriture des lignes (via _safe_set_cell) -----
+    row = data_start
 
     def _as_int(v) -> int:
         try:
@@ -370,16 +401,15 @@ def fill_bl_enlevements_xlsx(
             return 0
 
     for _, r in df.iterrows():
-        ws.cell(row=row, column=c_ref).value   = str(r.get("Référence", ""))
-        ws.cell(row=row, column=c_prod).value  = str(r.get("Produit", ""))
-        ws.cell(row=row, column=c_ddm).value   = _to_ddm_val(r.get("DDM", ""))
-
-        ws.cell(row=row, column=c_qc).value    = _as_int(r.get("Quantité cartons", 0))
-        ws.cell(row=row, column=c_qp).value    = _as_int(r.get("Quantité palettes", 0))
-        ws.cell(row=row, column=c_poids).value = _as_int(r.get("Poids palettes (kg)", 0))
+        _write_cell(ws, row, c_ref,   str(r.get("Référence", "")))
+        _write_cell(ws, row, c_prod,  str(r.get("Produit", "")))
+        _write_cell(ws, row, c_ddm,   _to_ddm_val(r.get("DDM", "")))
+        _write_cell(ws, row, c_qc,    _as_int(r.get("Quantité cartons", 0)))
+        _write_cell(ws, row, c_qp,    _as_int(r.get("Quantité palettes", 0)))
+        _write_cell(ws, row, c_poids, _as_int(r.get("Poids palettes (kg)", 0)))
         row += 1
 
-    # ----- 6) Sauvegarde -----
+    # ----- 7) Sauvegarde -----
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -510,7 +540,7 @@ def build_bl_enlevements_pdf(
     min_w = {0: 30.0, 1: 58.0, 2: 26.0, 3: 22.0, 4: 20.0, 5: 18.0}
     extra_needed = 0.0
     for j, h in enumerate(headers):
-        if j == 1:  # on prend l'espace à Produit si besoin
+        if j == 1:
             continue
         need = pdf.get_string_width(_txt(h)) + 2 * margin_mm
         new_w = max(widths[j], need, min_w.get(j, widths[j]))
