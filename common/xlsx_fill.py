@@ -333,26 +333,43 @@ def fill_bl_enlevements_xlsx(
     if r and c:
         _write_right_of(ws, r, c, date_ramasse.strftime("%d/%m/%Y"))
 
-       # ----- 2) Destinataire (dans la cellule fusionnée, multilignes) -----
+    # ----- 2) Destinataire (robuste : cellule fusionnée à droite du libellé) -----
     from openpyxl.styles import Alignment
 
     r, c = _find_cell_by_regex(ws, r"destinataire")
     if r and c:
-        # cellule cible = à DROITE du libellé
-        rr, cc = r, c + 1
-        # si c'est une cellule fusionnée, écrire dans la cellule "top-left" de la fusion
+        # 1) Cherche la zone fusionnée à DROITE du libellé, sur la même bande
+        target_rng = None
         for rng in ws.merged_cells.ranges:
-            if rng.min_row <= rr <= rng.max_row and rng.min_col <= cc <= rng.max_col:
-                rr, cc = rng.min_row, rng.min_col
-                break
+            if rng.min_row <= r <= rng.max_row and rng.min_col > c:
+                if target_rng is None or rng.min_col < target_rng.min_col:
+                    target_rng = rng
+
+        if target_rng:
+            rr, cc = target_rng.min_row, target_rng.min_col
+            rr_end = target_rng.max_row
+        else:
+            # fallback : juste la cellule à droite si pas de fusion détectée
+            rr, cc = r, c + 1
+            rr_end = rr
 
         cell = ws.cell(row=rr, column=cc)
-        # titre + toutes les lignes d'adresse
+
+        # 2) Texte (titre + toutes les lignes d'adresse)
         lines = [destinataire_title] + (destinataire_lines or [])
-        cell.value = "\n".join([str(x).strip() for x in lines if str(x).strip()])
+        text = "\n".join([str(x).strip() for x in lines if str(x).strip()])
+        cell.value = text
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # (optionnel) si une ligne d'adresse traîne hors de l'encadré, on la vide
+        # 3) Hauteur de ligne pour que tout soit visible (approx 14 pt par ligne)
+        n = max(1, text.count("\n") + 1)
+        span = max(1, rr_end - rr + 1)
+        per_row = 14 * n / span
+        for rset in range(rr, rr_end + 1):
+            cur = ws.row_dimensions[rset].height or 0
+            ws.row_dimensions[rset].height = max(cur, per_row)
+
+        # 4) Éventuelle ligne parasite en dessous de l'encadré -> on la vide
         zr, zc = _find_cell_by_regex(ws, r"zac\s+du\s+haut\s+de\s+wissous")
         if zr and zc:
             ws.cell(row=zr, column=zc).value = ""
