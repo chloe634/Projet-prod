@@ -383,39 +383,60 @@ def fill_bl_enlevements_xlsx(
             ws.cell(row=zr, column=zc).value = ""
 
 
-    # ----- 3) En-têtes du tableau (tolérant) -----
-    hdr_row, _ = _find_table_headers(ws, [
-        "Référence", "Produit", "DDM",
-        "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"
-    ])
-    if not hdr_row:
-        raise KeyError("Ligne d’en-têtes du tableau introuvable dans le modèle Excel.")
+        # ----- 3) En-têtes du tableau (robuste) -----
+    targets = ["Référence", "Produit", "DDM", "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"]
+    syns = {
+        "Référence": ["référence", "reference"],
+        "Produit": ["produit", "produit (gout + format)", "produit gout format"],
+        "DDM": ["ddm", "date de durabilite"],
+        "Quantité cartons": ["quantité cartons", "quantite cartons", "n° cartons", "no cartons", "nb cartons"],
+        "Quantité palettes": ["quantité palettes", "quantite palettes", "n° palettes", "no palettes", "nb palettes"],
+        "Poids palettes (kg)": ["poids palettes (kg)", "poids palettes", "poids (kg)"],
+    }
 
-    header_vals = [ws.cell(row=hdr_row, column=j).value for j in range(1, ws.max_column + 1)]
+    def _row_map(row_idx: int) -> dict[str, int | None]:
+        """Retourne un mapping nom->col pour une ligne candidate."""
+        max_cols = min(ws.max_column, 80)
+        vals = [_normalize_header_text(ws.cell(row=row_idx, column=j).value) for j in range(1, max_cols + 1)]
+        colmap: dict[str, int | None] = {t: None for t in targets}
+        for t in targets:
+            wanted = [_normalize_header_text(t)] + syns[t]
+            wanted = [_normalize_header_text(x) for x in wanted]
+            # exact d'abord
+            for j, hv in enumerate(vals, start=1):
+                if hv in wanted:
+                    colmap[t] = j
+                    break
+            if colmap[t] is None:
+                # contains tolérant
+                for j, hv in enumerate(vals, start=1):
+                    if any(w in hv for w in wanted if len(w) >= 3):
+                        colmap[t] = j
+                        break
+        return colmap
 
-    def _match_header(target: str, contains: bool=False) -> int | None:
-        t = _normalize_header_text(target)
-        for j, v in enumerate(header_vals, start=1):
-            h = _normalize_header_text(v)
-            if (contains and t in h) or (not contains and t == h):
-                return j
-        return None
+    # 1) cherche une ligne avec >= 4 correspondances (évite la ligne "Produits issus…")
+    best_row, best_hits, best_map = None, 0, None
+    for r_scan in range(1, min(ws.max_row, 150) + 1):
+        colmap = _row_map(r_scan)
+        hits = sum(v is not None for v in colmap.values())
+        if hits > best_hits:
+            best_row, best_hits, best_map = r_scan, hits, colmap
+        if hits >= 4:
+            break
 
-    c_ref   = _match_header("référence") or _match_header("reference")
-    c_prod  = (_match_header("produit")
-               or _match_header("produit (gout + format)", contains=True)
-               or _match_header("produit gout format", contains=True))
-    c_ddm   = _match_header("ddm") or _match_header("date de durabilite", contains=True)
-    c_qc    = _match_header("quantité cartons") or _match_header("quantite cartons")
-    c_qp    = _match_header("quantité palettes") or _match_header("quantite palettes")
-    c_poids = (_match_header("poids palettes (kg)")
-               or _match_header("poids palettes")
-               or _match_header("poids (kg)"))
+    if not best_row or best_hits < 3:
+        raise KeyError("Ligne d’en-têtes du tableau introuvable dans le modèle Excel (pas assez de correspondances).")
 
-    # fallback : Produit entre Réf et DDM
-    if c_prod is None and c_ref is not None and c_ddm is not None and c_ddm > c_ref:
-        if (c_ddm - c_ref) >= 2:
-            c_prod = c_ref + 1
+    hdr_row = best_row
+    colmap = best_map
+
+    c_ref   = colmap.get("Référence")
+    c_prod  = colmap.get("Produit")
+    c_ddm   = colmap.get("DDM")
+    c_qc    = colmap.get("Quantité cartons")
+    c_qp    = colmap.get("Quantité palettes")
+    c_poids = colmap.get("Poids palettes (kg)")
 
     need = {
         "Référence": c_ref,
@@ -426,7 +447,33 @@ def fill_bl_enlevements_xlsx(
         "Poids palettes (kg)": c_poids,
     }
     if any(v is None for v in need.values()):
+        # dernier recours : regarde +/- 2 lignes autour (selon certains modèles)
+        for delta in (-1, 1, 2, -2):
+            rr = hdr_row + delta
+            if rr < 1 or rr > ws.max_row:
+                continue
+            colmap2 = _row_map(rr)
+            if sum(v is not None for v in colmap2.values()) >= 4:
+                hdr_row = rr
+                colmap = colmap2
+                c_ref   = colmap.get("Référence")
+                c_prod  = colmap.get("Produit")
+                c_ddm   = colmap.get("DDM")
+                c_qc    = colmap.get("Quantité cartons")
+                c_qp    = colmap.get("Quantité palettes")
+                c_poids = colmap.get("Poids palettes (kg)")
+                need = {
+                    "Référence": c_ref, "Produit": c_prod, "DDM": c_ddm,
+                    "Quantité cartons": c_qc, "Quantité palettes": c_qp, "Poids palettes (kg)": c_poids,
+                }
+                break
+
+    if any(v is None for v in need.values()):
         raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
+
+    # (optionnel) force le libellé affiché de la 2e colonne
+    ws.cell(row=hdr_row, column=c_prod).value = "Produit"
+
 
     # Force le libellé d'en-tête de la 2e colonne
     ws.cell(row=hdr_row, column=c_prod).value = "Produit"
