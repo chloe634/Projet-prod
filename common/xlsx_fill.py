@@ -333,12 +333,32 @@ def fill_bl_enlevements_xlsx(
     if r and c:
         _write_right_of(ws, r, c, date_ramasse.strftime("%d/%m/%Y"))
 
-    # ----- 2) Destinataire -----
+    # ----- 2) Destinataire (dans la cellule fusionnée, multilignes) -----
+    from openpyxl.styles import Alignment
+    
     r, c = _find_cell_by_regex(ws, r"destinataire")
     if r and c:
-        _write_right_of(ws, r, c, destinataire_title)
-        for i, line in enumerate(destinataire_lines[:3], start=1):
-            ws.cell(row=r + i, column=c + 1).value = line
+        # cible = cellule à DROITE du libellé
+        rr, cc = r, c + 1
+        # si cette cellule fait partie d'une fusion, on écrit dans la cellule "top-left" de la fusion
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= rr <= rng.max_row and rng.min_col <= cc <= rng.max_col:
+                rr, cc = rng.min_row, rng.min_col
+                break
+    
+        cell = ws.cell(row=rr, column=cc)
+        # titre + toutes les lignes d'adresse en une seule valeur (retours à la ligne)
+        lines = [destinataire_title] + (destinataire_lines or [])
+        cell.value = "\n".join([str(x) for x in lines if str(x).strip()])
+    
+        # wrap + align top pour que tout soit visible
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    
+        # (optionnel) si le modèle contient une ligne centrée "ZAC du Haut..." sous l'encadré, on la vide
+        zr, zc = _find_cell_by_regex(ws, r"zac\s+du\s+haut\s+de\s+wissous")
+        if zr and zc:
+            ws.cell(row=zr, column=zc).value = ""
+
 
     # ----- 3) En-têtes du tableau (tolérant) -----
     hdr_row, _ = _find_table_headers(ws, [
@@ -384,6 +404,10 @@ def fill_bl_enlevements_xlsx(
     }
     if any(v is None for v in need.values()):
         raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
+
+# Force le libellé d'en-tête de la 2e colonne
+ws.cell(row=hdr_row, column=c_prod).value = "Produit"
+
 
     # ----- 4) Normalisation DF d'entrée -----
     df = df_lines.copy()
