@@ -383,101 +383,100 @@ def fill_bl_enlevements_xlsx(
             ws.cell(row=zr, column=zc).value = ""
 
 
-        # ----- 3) En-têtes du tableau (robuste) -----
-    targets = ["Référence", "Produit", "DDM", "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"]
+         # ----- 3) En-têtes du tableau (ultra-robuste) -----
+    def _norm(x: str) -> str:
+        return _normalize_header_text(x)
+
+    # cibles + synonymes acceptés
+    order = ["Référence", "Produit", "DDM", "Quantité cartons", "Quantité palettes", "Poids palettes (kg)"]
     syns = {
         "Référence": ["référence", "reference"],
         "Produit": ["produit", "produit (gout + format)", "produit gout format"],
-        "DDM": ["ddm", "date de durabilite"],
+        "DDM": ["ddm", "date de durabilite", "date de durabilité"],
         "Quantité cartons": ["quantité cartons", "quantite cartons", "n° cartons", "no cartons", "nb cartons"],
         "Quantité palettes": ["quantité palettes", "quantite palettes", "n° palettes", "no palettes", "nb palettes"],
         "Poids palettes (kg)": ["poids palettes (kg)", "poids palettes", "poids (kg)"],
     }
 
-    def _row_map(row_idx: int) -> dict[str, int | None]:
-        """Retourne un mapping nom->col pour une ligne candidate."""
-        max_cols = min(ws.max_column, 80)
-        vals = [_normalize_header_text(ws.cell(row=row_idx, column=j).value) for j in range(1, max_cols + 1)]
-        colmap: dict[str, int | None] = {t: None for t in targets}
-        for t in targets:
-            wanted = [_normalize_header_text(t)] + syns[t]
-            wanted = [_normalize_header_text(x) for x in wanted]
-            # exact d'abord
+    def _score_row(row_idx: int):
+        max_cols = min(ws.max_column, 120)
+        vals = [_norm(ws.cell(row=row_idx, column=j).value) for j in range(1, max_cols + 1)]
+        cmap = {k: None for k in order}
+        hits = 0
+        for key in order:
+            wanted = [_norm(key)] + [_norm(x) for x in syns[key]]
+            # exact
             for j, hv in enumerate(vals, start=1):
                 if hv in wanted:
-                    colmap[t] = j
+                    cmap[key] = j
+                    hits += 1
                     break
-            if colmap[t] is None:
-                # contains tolérant
+            # contains
+            if cmap[key] is None:
                 for j, hv in enumerate(vals, start=1):
                     if any(w in hv for w in wanted if len(w) >= 3):
-                        colmap[t] = j
+                        cmap[key] = j
+                        hits += 1
                         break
-        return colmap
+        return hits, cmap
 
-    # 1) cherche une ligne avec >= 4 correspondances (évite la ligne "Produits issus…")
-    best_row, best_hits, best_map = None, 0, None
-    for r_scan in range(1, min(ws.max_row, 150) + 1):
-        colmap = _row_map(r_scan)
-        hits = sum(v is not None for v in colmap.values())
-        if hits > best_hits:
-            best_row, best_hits, best_map = r_scan, hits, colmap
-        if hits >= 4:
+    # 1) on scanne les premières lignes et on garde la meilleure
+    best = (0, None, None)  # (hits, row, colmap)
+    for r_scan in range(1, min(ws.max_row, 200) + 1):
+        h, cmap = _score_row(r_scan)
+        if h > best[0]:
+            best = (h, r_scan, cmap)
+        if h >= 4:
             break
 
-    if not best_row or best_hits < 3:
+    hits, hdr_row, colmap = best
+
+    # 2) fallback ciblé : si <3 hits, cherche une cellule "référence" et rescore cette ligne
+    if hits < 3:
+        rr, cc = _find_cell_by_regex(ws, r"r[eé]f[ée]rence")
+        if rr and cc:
+            h2, cmap2 = _score_row(rr)
+            if h2 >= hits:
+                hits, hdr_row, colmap = h2, rr, cmap2
+
+    if not hdr_row:
         raise KeyError("Ligne d’en-têtes du tableau introuvable dans le modèle Excel (pas assez de correspondances).")
 
-    hdr_row = best_row
-    colmap = best_map
+    # 3) complète les colonnes manquantes en utilisant l'ordre gauche→droite de 'order'
+    taken = {v for v in colmap.values() if v is not None}
+    # point de départ : juste après "Référence" si on l'a, sinon colonne 1
+    pos_guess = (colmap.get("Référence") or 1) + 1
+    for key in order:
+        if colmap.get(key) is None:
+            # essaie de trouver une étiquette plausible autour
+            found = None
+            for j in range(pos_guess, min(ws.max_column, pos_guess + 12) + 1):
+                if j in taken:
+                    continue
+                hv = _norm(ws.cell(row=hdr_row, column=j).value)
+                wanted = [_norm(key)] + [_norm(x) for x in syns[key]]
+                if hv in wanted or any(w in hv for w in wanted if len(w) >= 3):
+                    found = j
+                    break
+            if found is None:
+                # sinon, prend la prochaine colonne libre
+                j = pos_guess
+                while j in taken:
+                    j += 1
+                found = j
+            colmap[key] = found
+            taken.add(found)
+            pos_guess = found + 1
 
-    c_ref   = colmap.get("Référence")
-    c_prod  = colmap.get("Produit")
-    c_ddm   = colmap.get("DDM")
-    c_qc    = colmap.get("Quantité cartons")
-    c_qp    = colmap.get("Quantité palettes")
-    c_poids = colmap.get("Poids palettes (kg)")
+    c_ref   = colmap["Référence"]
+    c_prod  = colmap["Produit"]
+    c_ddm   = colmap["DDM"]
+    c_qc    = colmap["Quantité cartons"]
+    c_qp    = colmap["Quantité palettes"]
+    c_poids = colmap["Poids palettes (kg)"]
 
-    need = {
-        "Référence": c_ref,
-        "Produit": c_prod,
-        "DDM": c_ddm,
-        "Quantité cartons": c_qc,
-        "Quantité palettes": c_qp,
-        "Poids palettes (kg)": c_poids,
-    }
-    if any(v is None for v in need.values()):
-        # dernier recours : regarde +/- 2 lignes autour (selon certains modèles)
-        for delta in (-1, 1, 2, -2):
-            rr = hdr_row + delta
-            if rr < 1 or rr > ws.max_row:
-                continue
-            colmap2 = _row_map(rr)
-            if sum(v is not None for v in colmap2.values()) >= 4:
-                hdr_row = rr
-                colmap = colmap2
-                c_ref   = colmap.get("Référence")
-                c_prod  = colmap.get("Produit")
-                c_ddm   = colmap.get("DDM")
-                c_qc    = colmap.get("Quantité cartons")
-                c_qp    = colmap.get("Quantité palettes")
-                c_poids = colmap.get("Poids palettes (kg)")
-                need = {
-                    "Référence": c_ref, "Produit": c_prod, "DDM": c_ddm,
-                    "Quantité cartons": c_qc, "Quantité palettes": c_qp, "Poids palettes (kg)": c_poids,
-                }
-                break
-
-    if any(v is None for v in need.values()):
-        raise ValueError(f"Colonnes incomplètes dans le modèle Excel: {need}")
-
-    # (optionnel) force le libellé affiché de la 2e colonne
+    # Force l'étiquette "Produit" visible dans le modèle
     ws.cell(row=hdr_row, column=c_prod).value = "Produit"
-
-
-    # Force le libellé d'en-tête de la 2e colonne
-    ws.cell(row=hdr_row, column=c_prod).value = "Produit"
-
 
 
     # ----- 4) Normalisation DF d'entrée -----
