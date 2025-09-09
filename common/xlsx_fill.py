@@ -333,46 +333,55 @@ def fill_bl_enlevements_xlsx(
     if r and c:
         _write_right_of(ws, r, c, date_ramasse.strftime("%d/%m/%Y"))
 
-    # ----- 2) Destinataire (robuste : cellule fusionnée à droite du libellé) -----
+    # ----- 2) Destinataire (robuste : trouve ou crée la fusion à droite) -----
     from openpyxl.styles import Alignment
 
     r, c = _find_cell_by_regex(ws, r"destinataire")
     if r and c:
-        # 1) Cherche la zone fusionnée à DROITE du libellé, sur la même bande
+        # 1) essaie d'attraper une fusion existante à DROITE du libellé, sur la même bande
         target_rng = None
         for rng in ws.merged_cells.ranges:
             if rng.min_row <= r <= rng.max_row and rng.min_col > c:
+                # on privilégie la fusion la plus à gauche (côté valeur)
                 if target_rng is None or rng.min_col < target_rng.min_col:
                     target_rng = rng
 
         if target_rng:
             rr, cc = target_rng.min_row, target_rng.min_col
-            rr_end = target_rng.max_row
+            rr_end, cc_end = target_rng.max_row, target_rng.max_col
         else:
-            # fallback : juste la cellule à droite si pas de fusion détectée
+            # 2) pas de fusion repérée : on EN CRÉE une (3 lignes × 6 colonnes) à droite du libellé
             rr, cc = r, c + 1
-            rr_end = rr
+            rr_end = min(r + 2, ws.max_row)
+            cc_end = min(c + 6, ws.max_column)
+            try:
+                ws.merge_cells(start_row=rr, start_column=cc, end_row=rr_end, end_column=cc_end)
+            except Exception:
+                # si la zone est déjà partiellement fusionnée, on ignore l'erreur et on écrira au top-left
+                pass
 
         cell = ws.cell(row=rr, column=cc)
 
-        # 2) Texte (titre + toutes les lignes d'adresse)
+        # 3) écrit TOUT (titre + adresse) en multi-lignes
         lines = [destinataire_title] + (destinataire_lines or [])
         text = "\n".join([str(x).strip() for x in lines if str(x).strip()])
         cell.value = text
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-        # 3) Hauteur de ligne pour que tout soit visible (approx 14 pt par ligne)
-        n = max(1, text.count("\n") + 1)
-        span = max(1, rr_end - rr + 1)
-        per_row = 14 * n / span
+        # 4) ajuste la hauteur des lignes de la zone pour rendre le texte visible
+        n_lines = max(1, text.count("\n") + 1)
+        span_rows = max(1, (rr_end - rr + 1))
+        # ~14 points par ligne répartis sur les lignes fusionnées
+        per_row_height = 14 * n_lines / span_rows
         for rset in range(rr, rr_end + 1):
             cur = ws.row_dimensions[rset].height or 0
-            ws.row_dimensions[rset].height = max(cur, per_row)
+            ws.row_dimensions[rset].height = max(cur, per_row_height)
 
-        # 4) Éventuelle ligne parasite en dessous de l'encadré -> on la vide
+        # 5) (optionnel) si une ligne parasite “ZAC du Haut…” traîne ailleurs, on la vide
         zr, zc = _find_cell_by_regex(ws, r"zac\s+du\s+haut\s+de\s+wissous")
         if zr and zc:
             ws.cell(row=zr, column=zc).value = ""
+
 
     # ----- 3) En-têtes du tableau (tolérant) -----
     hdr_row, _ = _find_table_headers(ws, [
