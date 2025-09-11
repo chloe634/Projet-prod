@@ -130,14 +130,14 @@ st.data_editor(
 section("Fiche de production (modèle Excel)", "🧾")
 
 _sp_prev = st.session_state.get("saved_production")
-default_semaine = _dt.date.fromisoformat(_sp_prev["semaine_du"]) if _sp_prev and "semaine_du" in _sp_prev else _dt.date.today()
-default_ddm     = _dt.date.fromisoformat(_sp_prev["ddm"])       if _sp_prev and "ddm" in _sp_prev       else _dt.date.today()
+default_debut = _dt.date.fromisoformat(_sp_prev["semaine_du"]) if _sp_prev and "semaine_du" in _sp_prev else _dt.date.today()
 
-colA, colB = st.columns(2)
-with colA:
-    date_semaine = st.date_input("Semaine du", value=default_semaine)
-with colB:
-    date_ddm = st.date_input("DDM (date limite)", value=default_ddm)
+# Champ unique : date de début fermentation
+date_debut = st.date_input("Date de début de fermentation", value=default_debut)
+
+# DDM = début + 1 an
+date_ddm = date_debut + _dt.timedelta(days=365)
+
 
 if st.button("💾 Sauvegarder cette production", use_container_width=True):
     g_order = []
@@ -150,9 +150,10 @@ if st.button("💾 Sauvegarder cette production", use_container_width=True):
         "df_min": df_min.copy(),
         "df_calc": df_calc.copy(),
         "gouts": g_order,
-        "semaine_du": date_semaine.isoformat(),
+        "semaine_du": date_debut.isoformat(),   # renommé mais même logique
         "ddm": date_ddm.isoformat(),
     }
+
     st.success("Production sauvegardée ✅ — tu peux maintenant générer la fiche.")
 
 sp = st.session_state.get("saved_production")
