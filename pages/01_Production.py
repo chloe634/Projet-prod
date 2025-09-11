@@ -59,18 +59,31 @@ with st.sidebar:
     all_gouts = sorted(pd.Series(df_in.get("GoutCanon", pd.Series(dtype=str))).dropna().astype(str).str.strip().unique())
     excluded_gouts = st.multiselect("🚫 Exclure certains goûts", options=all_gouts, default=[])
 
+    # 🔥 NOUVEAU : forcer certains goûts
+    forced_gouts = st.multiselect(
+        "✅ Forcer la production de ces goûts",
+        options=[g for g in all_gouts if g not in set(excluded_gouts)],
+        help="Les goûts sélectionnés ici seront produits quoi qu’il arrive. "
+             "Si tu en choisis plus que le nombre de goûts sélectionnés ci-dessus, "
+             "le nombre sera automatiquement augmenté."
+    )
+
+
 st.caption(
     f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours**"
 )
 
 # ---------------- Calculs ----------------
+# Nombre de goûts effectif : on garantit que tous les 'forcés' rentrent
+effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_gouts
+
 df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all = compute_plan(
     df_in=df_in,
     window_days=window_days,
     volume_cible=volume_cible,
-    nb_gouts=nb_gouts,
+    nb_gouts=effective_nb_gouts,         # 👈 prend en compte les 'forcés'
     repartir_pro_rv=repartir_pro_rv,
-    manual_keep=None,
+    manual_keep=forced_gouts or None,    # 👈 forçage
     exclude_list=excluded_gouts,
 )
 
