@@ -356,24 +356,29 @@ if st.button("🧾 Télécharger la version PDF", use_container_width=True):
         st.error("Renseigne au moins une **Quantité cartons** > 0.")
     else:
         try:
+            # 1) Génère le PDF UNE SEULE FOIS
             pdf_bytes = build_bl_enlevements_pdf(
                 date_creation=_today_paris(),
                 date_ramasse=date_ramasse,
                 destinataire_title=DEST_TITLE,
                 destinataire_lines=DEST_LINES,
                 df_lines=df_calc[display_cols],
-                # pas de col2_header ici → la colonne s'appelle "Produit"
             )
-            fname_pdf = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.pdf"
+
+            # 2) Mémorise-le pour l'envoi par e-mail
+            st.session_state["fiche_ramasse_pdf"] = pdf_bytes
+
+            # 3) Bouton de téléchargement
             st.download_button(
-                "⬇️ Télécharger le PDF",
+                "📄 Télécharger la version PDF",
                 data=pdf_bytes,
-                file_name=fname_pdf,
+                file_name=f"Fiche_de_ramasse_{date_ramasse:%Y%m%d}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
             )
         except Exception as e:
-            st.error(f"Erreur lors de la génération du PDF : {e}")
+            st.error(f"Erreur PDF : {e}")
+
 
 # Après la génération du PDF
 st.session_state["fiche_ramasse_pdf"] = pdf_bytes
