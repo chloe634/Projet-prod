@@ -12,6 +12,49 @@ import importlib
 import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
 from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
+# === EMAIL (ajouter ces 2 lignes en haut) ===
+import smtplib
+from email.message import EmailMessage
+
+# === HELPERS EMAIL (coller une seule fois, après les imports) =================
+import streamlit as st
+import pandas as pd
+
+def _get_email_cfg():
+    cfg = st.secrets.get("email", {})
+    required = ("host", "port", "user", "password")
+    missing = [k for k in required if k not in cfg]
+    if missing:
+        raise RuntimeError(f"Secrets email manquants: {', '.join(missing)}")
+    cfg.setdefault("sender", cfg["user"])
+    cfg.setdefault("recipients", [])
+    return cfg
+
+def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str]):
+    cfg = _get_email_cfg()
+
+    # Corps du mail demandé (XXX = total_palettes)
+    body = f"""Bonjour,
+
+Nous aurions besoin d’une ramasse pour demain.
+Pour {total_palettes} palettes.
+
+Merci,
+Bon après-midi."""
+
+    msg = EmailMessage()
+    msg["Subject"] = "Demande de ramasse"
+    msg["From"] = cfg["sender"]
+    msg["To"] = ", ".join(to_list)
+    msg.set_content(body)
+    msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
+
+    with smtplib.SMTP(cfg["host"], int(cfg["port"])) as smtp:
+        smtp.starttls()
+        smtp.login(cfg["user"], cfg["password"])
+        smtp.send_message(msg)
+# ============================================================================#
+
 
 
 # ------------------------------------------------------------------
@@ -331,3 +374,45 @@ if st.button("🧾 Télécharger la version PDF", use_container_width=True):
             )
         except Exception as e:
             st.error(f"Erreur lors de la génération du PDF : {e}")
+
+# Après la génération du PDF
+st.session_state["fiche_ramasse_pdf"] = pdf_bytes
+
+# === ENVOI PAR E-MAIL : à coller en bas de l'onglet Fiche de ramasse =========
+
+# 1) Trouver la colonne "palettes" et calculer le total
+PALETTE_COL_CANDIDATES = [
+    "Quantité palettes", "N° palettes", "Nb palettes", "Quantite palettes"
+]
+pal_col = next((c for c in PALETTE_COL_CANDIDATES if c in df_calc.columns), None)
+if pal_col is None:
+    st.error("Colonne des palettes introuvable dans df_calc. Renomme une des colonnes en "
+             + ", ".join(PALETTE_COL_CANDIDATES))
+else:
+    total_palettes = int(pd.to_numeric(df_calc[pal_col], errors="coerce").fillna(0).sum())
+
+    # 2) Récupérer le PDF généré
+    pdf_bytes = st.session_state.get("fiche_ramasse_pdf")
+    if pdf_bytes is None:
+        st.info("Génère d’abord la version PDF (bouton de téléchargement) pour pouvoir l’envoyer par e-mail.")
+
+    # 3) UI destinataires + bouton d'envoi
+    default_to = ", ".join(st.secrets.get("email", {}).get("recipients", []))
+    to_input = st.text_input("Destinataires (séparés par des virgules)", value=default_to)
+    to_list = [x.strip() for x in to_input.split(",") if x.strip()]
+
+    if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
+        if pdf_bytes is None:
+            st.error("Le PDF n’est pas prêt. Clique d’abord sur « Télécharger la version PDF ».")
+        elif not to_list:
+            st.error("Indique au moins un destinataire.")
+        else:
+            try:
+                filename = f"Fiche_de_ramasse_{date_ramasse.strftime('%Y%m%d')}.pdf"
+                send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list)
+                st.success("E-mail envoyé ✅")
+            except Exception as e:
+                st.error(f"Échec de l’envoi : {e}")
+
+# ============================================================================#
+
