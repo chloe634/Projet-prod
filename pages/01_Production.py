@@ -74,20 +74,34 @@ st.caption(
 )
 
 # ---------------- Calculs ----------------
-# Nombre de goûts effectif : on garantit que tous les 'forcés' rentrent
-effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_gouts
+try:
+    # nouvelle version (7 valeurs, avec note_msg)
+    df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all, note_msg = compute_plan(
+        df_in=df_in,
+        window_days=window_days,
+        volume_cible=volume_cible,
+        nb_gouts=effective_nb_gouts,
+        repartir_pro_rv=repartir_pro_rv,
+        manual_keep=forced_gouts or None,
+        exclude_list=excluded_gouts,
+    )
+except TypeError:
+    # ancienne version (6 valeurs, sans note_msg)
+    df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all = compute_plan(
+        df_in=df_in,
+        window_days=window_days,
+        volume_cible=volume_cible,
+        nb_gouts=effective_nb_gouts,
+        repartir_pro_rv=repartir_pro_rv,
+        manual_keep=forced_gouts or None,
+        exclude_list=excluded_gouts,
+    )
+    note_msg = ""
 
-df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all, note_msg = compute_plan(
-    df_in=df_in,
-    window_days=window_days,
-    volume_cible=volume_cible,
-    nb_gouts=effective_nb_gouts,         # 👈 prend en compte les 'forcés'
-    repartir_pro_rv=repartir_pro_rv,
-    manual_keep=forced_gouts or None,    # 👈 forçage
-    exclude_list=excluded_gouts,
-)
+# Affiche l’avertissement si l’algorithme a ajusté la sélection
 if note_msg:
     st.warning(note_msg)
+
 
 # ---------------- KPIs ----------------
 total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum()) if "Bouteilles à produire (arrondi)" in df_min.columns else 0
