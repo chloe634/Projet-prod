@@ -16,19 +16,51 @@ from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 import smtplib
 from email.message import EmailMessage
 
-# === HELPERS EMAIL (coller une seule fois, après les imports) =================
+# === HELPERS EMAIL (avec fallback TOML) =======================================
+import os
 import streamlit as st
-import pandas as pd
+
+# tomllib (Py 3.11+) ou tomli (Py 3.8–3.10)
+try:
+    import tomllib as _toml
+except Exception:
+    import tomli as _toml  # ➜ ajoute 'tomli' dans requirements.txt
+
+def _load_email_secrets_fallback() -> dict:
+    """
+    1) st.secrets['email'] si dispo
+    2) ./.streamlit/secrets.toml (chemin standard Streamlit)
+    3) ./streamlit/secrets.toml (compat dépôt actuel)
+    """
+    if "email" in st.secrets:
+        return dict(st.secrets.get("email", {}))
+
+    for p in (".streamlit/secrets.toml", "streamlit/secrets.toml"):
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    data = _toml.load(f)
+                if isinstance(data, dict) and "email" in data:
+                    return dict(data["email"] or {})
+            except Exception:
+                pass
+    return {}
 
 def _get_email_cfg():
-    cfg = st.secrets.get("email", {})
-    required = ("host", "port", "user", "password")
-    missing = [k for k in required if k not in cfg]
+    cfg = _load_email_secrets_fallback()
+    required = ("host","port","user","password")
+    missing = [k for k in required if not str(cfg.get(k, "")).strip()]
     if missing:
-        raise RuntimeError(f"Secrets email manquants: {', '.join(missing)}")
+        # L’UI peut rester utilisable (saisie manuelle), mais on explique
+        raise RuntimeError("Secrets email manquants: " + ", ".join(missing))
     cfg.setdefault("sender", cfg["user"])
-    cfg.setdefault("recipients", [])
+    # normalise recipients (liste)
+    rec = cfg.get("recipients", [])
+    if isinstance(rec, str):
+        rec = [x.strip() for x in rec.split(",") if x.strip()]
+    cfg["recipients"] = rec
     return cfg
+
 
 def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str]):
     cfg = _get_email_cfg()
@@ -399,9 +431,26 @@ else:
         st.info("Génère d’abord la version PDF (bouton de téléchargement) pour pouvoir l’envoyer par e-mail.")
 
     # 3) UI destinataires + bouton d'envoi
-    default_to = ", ".join(st.secrets.get("email", {}).get("recipients", []))
-    to_input = st.text_input("Destinataires (séparés par des virgules)", value=default_to)
+    # Pré-remplir depuis secrets (avec fallback)
+    try:
+        _cfg_preview = _get_email_cfg()
+        default_to  = ", ".join(_cfg_preview.get("recipients", []))
+        sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
+    except RuntimeError as e:
+        default_to  = ""
+        sender_hint = None
+        st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
+    
+    to_input = st.text_input(
+        "Destinataires (séparés par des virgules)",
+        value=default_to,
+        placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr"
+    )
     to_list = [x.strip() for x in to_input.split(",") if x.strip()]
+    
+    if sender_hint:
+        st.caption(f"Expéditeur utilisé : **{sender_hint}**")
+
 
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
         if pdf_bytes is None:
