@@ -424,36 +424,61 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
 
         cap_resume = f"{volume_cible:.2f} hL par goût"
     else:
-        somme_ventes = df_calc["Volume vendu (hl)"].sum()
-        if repartir_pro_rv and somme_ventes > 0:
-            df_calc["r_i_global"] = df_calc["Volume vendu (hl)"] / somme_ventes
-        else:
-            df_calc["r_i_global"] = 1.0 / len(df_calc)
-
-        df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
-        G_total_all = df_calc["G_i (hL)"].sum()
-        Y_total_all = G_total_all + float(volume_cible)
-        df_calc["X_th (hL)"] = df_calc["r_i_global"] * Y_total_all - df_calc["G_i (hL)"]
-
-        x = np.maximum(df_calc["X_th (hL)"].to_numpy(float), 0.0)
+        # --------- PARTAGE DE LA CIBLE ENTRE LES GOÛTS (phase 1) ----------
         V = float(volume_cible)
-        sum_x = x.sum()
-        
-        if sum_x < V - 1e-9:
-            # ➜ compléter sur TOUTES les lignes (même celles à 0), au prorata des poids globaux
-            w = df_calc["r_i_global"].to_numpy(float)
-            s = w.sum()
-            add = V - sum_x
-            x = x + (add * (w / s) if s > 0 else add / max(len(x), 1))
-        elif sum_x > V + 1e-9:
-            # ➜ réduire proportionnellement pour revenir à la cible
-            x = x * (V / sum_x)
-        
-        x = np.where(x < 1e-9, 0.0, x)
-        df_calc["X_adj (hL)"] = x
-        
+        df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
+
+        # poids par goût (ventes si dispo, sinon égalitaire)
+        ventes_par_gout = df_calc.groupby("GoutCanon")["Volume vendu (hl)"].sum()
+        if repartir_pro_rv and float(ventes_par_gout.sum()) > 0:
+            w_gout = ventes_par_gout / ventes_par_gout.sum()
+        else:
+            w_gout = pd.Series(1.0 / max(len(ventes_par_gout), 1), index=ventes_par_gout.index)
+
+        # --------- POIDS À L’INTÉRIEUR DE CHAQUE GOÛT (phase 2) ----------
+        def _weights_inside(grp_df: pd.DataFrame) -> pd.Series:
+            if repartir_pro_rv:
+                s = float(grp_df["Volume vendu (hl)"].sum())
+                if s > 0:
+                    return grp_df["Volume vendu (hl)"] / s
+            # égalitaire si pas de ventes
+            n = max(len(grp_df), 1)
+            return pd.Series([1.0 / n] * n, index=grp_df.index)
+
+        df_calc["w_in"] = (
+            df_calc.groupby("GoutCanon", group_keys=False)
+                   .apply(_weights_inside)
+        )
+
+        # --------- ALLOCATION PAR GOÛT (respect strict de la cible V) -----
+        df_calc["X_adj (hL)"] = 0.0
+        for g, grp in df_calc.groupby("GoutCanon"):
+            idx = grp.index
+            Vg = V * float(w_gout.get(g, 0.0))  # cible pour ce goût
+            Gg = float(grp["G_i (hL)"].sum())   # stock total de ce goût
+
+            w_in = grp["w_in"].to_numpy(float)
+            Gi   = grp["G_i (hL)"].to_numpy(float)
+
+            # besoin théorique ligne: w_in * (Gg + Vg) - Gi
+            x = w_in * (Gg + Vg) - Gi
+            x = np.maximum(x, 0.0)
+
+            sum_x = x.sum()
+            if sum_x < Vg - 1e-9:
+                # on complète au prorata des poids internes (même pour les lignes à 0)
+                s = w_in.sum()
+                add = Vg - sum_x
+                x = x + (add * (w_in / s) if s > 0 else add / max(len(x), 1))
+            elif sum_x > Vg + 1e-9:
+                # on réduit proportionnellement pour revenir à la cible
+                x = x * (Vg / sum_x)
+
+            x = np.where(x < 1e-9, 0.0, x)
+            df_calc.loc[idx, "X_adj (hL)"] = x
 
         cap_resume = f"{volume_cible:.2f} hL au total (2 goûts)"
+
 
     df_calc["Cartons à produire (exact)"] = df_calc["X_adj (hL)"] / df_calc["Volume/carton (hL)"]
     if ROUND_TO_CARTON:
