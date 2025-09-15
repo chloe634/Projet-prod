@@ -290,6 +290,15 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
     miss = [c for c in required if c not in df_in.columns]
     if miss: raise ValueError(f"Colonnes manquantes: {miss}")
 
+    # --- helper catégorie (NEW) ---
+    def _category(g: str) -> str:
+        s = str(g or "").strip().lower()
+        # Tout ce qui contient 'infusion' -> infusion ; sinon on considère 'kéfir'
+        # (tes canoniques sont du type 'Infusion Mélisse', 'Mangue Passion', 'Gingembre', etc.)
+        return "infusion" if "infusion" in s else "kefir"
+
+    note_msg = ""  # NEW: message d’ajustement à renvoyer à l’UI
+
     df = df_in[required].copy()
     for c in ["Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]:
         df[c] = safe_num(df[c])
@@ -319,8 +328,10 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
     agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
     agg["jours_autonomie"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
     agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)
+    # tri par urgence décroissante
     agg = agg.sort_values(by=["score_urgence", "jours_autonomie", "ventes_hl"], ascending=[False, True, False])
 
+    # --- Sélection initiale (comme avant) ---
     if not manual_keep:
         gouts_cibles = agg.index.tolist()[:nb_gouts]
     else:
@@ -328,6 +339,46 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         if len(gouts_cibles) > nb_gouts:
             order = [g for g in agg.index if g in gouts_cibles]
             gouts_cibles = order[:nb_gouts]
+
+    # --- Ajustement "pas de mix infusion+kefir si nb_gouts=2" (NEW) ---
+    if nb_gouts == 2 and len(gouts_cibles) == 2:
+        cat_set = { _category(g) for g in gouts_cibles }
+        if len(cat_set) > 1:
+            # On cherche la meilleure paire de même catégorie en respectant l'ordre d'urgence d'agg
+            # 1) Catégorie du plus urgent (1er de agg parmi les deux)
+            ordered = [g for g in agg.index if g in set(gouts_cibles)]
+            first = ordered[0] if ordered else gouts_cibles[0]
+            target_cat = _category(first)
+
+            # 2) Liste candidates de la catégorie choisie (dans l'ordre agg)
+            same_cat_all = [g for g in agg.index if _category(g) == target_cat]
+            if len(same_cat_all) >= 2:
+                new_pair = same_cat_all[:2]
+                if set(new_pair) != set(gouts_cibles):
+                    note_msg = (
+                        "⚠️ Contrainte appliquée : pas de co-production **Infusion + Kéfir**. "
+                        f"Sélection ajustée → deux recettes **{ 'Infusion' if target_cat=='infusion' else 'Kéfir' }** "
+                        f"({new_pair[0]} ; {new_pair[1]})."
+                    )
+                gouts_cibles = new_pair
+            else:
+                # Pas 2 goûts dans la même catégorie que le plus urgent → on tente l'autre catégorie
+                other_cat = "kefir" if target_cat == "infusion" else "infusion"
+                other_all = [g for g in agg.index if _category(g) == other_cat]
+                if len(other_all) >= 2:
+                    gouts_cibles = other_all[:2]
+                    note_msg = (
+                        "⚠️ Contrainte appliquée : pas de co-production **Infusion + Kéfir**. "
+                        "La catégorie initiale ne contenait pas 2 goûts disponibles ; "
+                        f"sélection basculée sur deux recettes **{ 'Infusion' if other_cat=='infusion' else 'Kéfir' }** "
+                        f"({gouts_cibles[0]} ; {gouts_cibles[1]})."
+                    )
+                else:
+                    # Impossible de satisfaire strictement la contrainte (ex: 1 seul goût total)
+                    note_msg = (
+                        "⚠️ Contrainte non pleinement satisfaisable : moins de deux goûts disponibles dans une même recette. "
+                        "Vérifie les filtres/forçages ou ajoute des produits."
+                    )
 
     df_selected = df[df["GoutCanon"].isin(gouts_cibles)].copy()
     if len(gouts_cibles) == 0:
@@ -414,7 +465,8 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         "jours_autonomie": "Autonomie (jours)",
         "score_urgence": "Score urgence"
     })
-    return df_min, cap_resume, sel_gouts, synth_sel, df_calc, df
+    # NEW: on renvoie note_msg en 7e sortie
+    return df_min, cap_resume, sel_gouts, synth_sel, df_calc, df, note_msg
 
 def compute_losses_table_v48(df_in_all: pd.DataFrame, window_days: float, price_hL: float) -> pd.DataFrame:
     out_cols = ["Goût", "Demande 7 j (hL)", "Stock (hL)", "Manque sur 7 j (hL)", "Prix moyen (€/hL)", "Perte (€)"]
