@@ -430,10 +430,16 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
 
         # poids par goût (ventes si dispo, sinon égalitaire)
         ventes_par_gout = df_calc.groupby("GoutCanon")["Volume vendu (hl)"].sum()
-        if repartir_pro_rv and float(ventes_par_gout.sum()) > 0:
+        n_gouts = max(len(ventes_par_gout), 1)
+        
+        # ⚖️ Partage entre goûts :
+        # - si TOUS les goûts ont des ventes > 0 et que "prorata" est coché → prorata des ventes
+        # - sinon → partage égalitaire (assure un volume non nul pour chaque goût sélectionné)
+        if repartir_pro_rv and float(ventes_par_gout.sum()) > 0 and (ventes_par_gout > 0).all():
             w_gout = ventes_par_gout / ventes_par_gout.sum()
         else:
-            w_gout = pd.Series(1.0 / max(len(ventes_par_gout), 1), index=ventes_par_gout.index)
+            w_gout = pd.Series(1.0 / n_gouts, index=ventes_par_gout.index)
+
 
         # --------- POIDS À L’INTÉRIEUR DE CHAQUE GOÛT (phase 2) ----------
         def _weights_inside(grp_df: pd.DataFrame) -> pd.Series:
