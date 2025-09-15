@@ -402,13 +402,26 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         for _, grp in df_calc.groupby("GoutCanon"):
             x = grp["X_th (hL)"].to_numpy(float)
             r = grp["r_i"].to_numpy(float)
+        
+            # clamp à 0 (on ne "déproduit" pas)
             x = np.maximum(x, 0.0)
-            deficit = float(volume_cible) - x.sum()
+        
+            # somme vs cible
+            V = float(volume_cible)
+            sum_x = x.sum()
+            deficit = V - sum_x
+        
             if deficit > 1e-9:
+                # on complète au prorata r
                 r = np.where(r > 0, r, 0); s = r.sum()
-                x = x + (deficit * (r / s) if s > 0 else deficit / len(x))
+                x = x + (deficit * (r / s) if s > 0 else deficit / max(len(x), 1))
+            elif deficit < -1e-9:
+                # on a dépassé V suite au clamp -> réduction proportionnelle
+                x = x * (V / max(sum_x, 1e-12))
+        
             x = np.where(x < 1e-9, 0.0, x)
             df_calc.loc[grp.index, "X_adj (hL)"] = x
+
         cap_resume = f"{volume_cible:.2f} hL par goût"
     else:
         somme_ventes = df_calc["Volume vendu (hl)"].sum()
@@ -423,12 +436,26 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         df_calc["X_th (hL)"] = df_calc["r_i_global"] * Y_total_all - df_calc["G_i (hL)"]
 
         x = np.maximum(df_calc["X_th (hL)"].to_numpy(float), 0.0)
-        deficit = float(volume_cible) - x.sum()
-        if deficit > 1e-9:
-            w = df_calc["r_i_global"].to_numpy(float); s = w.sum()
-            x = x + (deficit * (w / s) if s > 0 else deficit / len(x))
+        V = float(volume_cible)
+        sum_x = x.sum()
+        
+        if sum_x < V - 1e-9:
+            # compléter au prorata des poids globaux, sur les lignes déjà positives
+            w = df_calc["r_i_global"].to_numpy(float)
+            mask_pos = x > 0
+            w_pos = w[mask_pos]; s = w_pos.sum()
+            add = V - sum_x
+            if s > 0 and mask_pos.any():
+                x[mask_pos] = x[mask_pos] + add * (w_pos / s)
+            else:
+                x = x + add / max((mask_pos.sum() or len(x)), 1)
+        elif sum_x > V + 1e-9:
+            # réduire proportionnellement pour revenir à la cible
+            x = x * (V / sum_x)
+        
         x = np.where(x < 1e-9, 0.0, x)
         df_calc["X_adj (hL)"] = x
+
         cap_resume = f"{volume_cible:.2f} hL au total (2 goûts)"
 
     df_calc["Cartons à produire (exact)"] = df_calc["X_adj (hL)"] / df_calc["Volume/carton (hL)"]
