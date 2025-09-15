@@ -1,9 +1,3 @@
-import os
-from pathlib import Path
-st.caption(f"cwd = {os.getcwd()}")
-st.caption(f"exists .streamlit/secrets.toml = {Path('.streamlit/secrets.toml').resolve().exists()}")
-
-
 # pages/03_Fiche_de_ramasse.py
 from __future__ import annotations
 import os, re, datetime as dt
