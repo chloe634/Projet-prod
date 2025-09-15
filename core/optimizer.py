@@ -440,21 +440,18 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         sum_x = x.sum()
         
         if sum_x < V - 1e-9:
-            # compléter au prorata des poids globaux, sur les lignes déjà positives
+            # ➜ compléter sur TOUTES les lignes (même celles à 0), au prorata des poids globaux
             w = df_calc["r_i_global"].to_numpy(float)
-            mask_pos = x > 0
-            w_pos = w[mask_pos]; s = w_pos.sum()
+            s = w.sum()
             add = V - sum_x
-            if s > 0 and mask_pos.any():
-                x[mask_pos] = x[mask_pos] + add * (w_pos / s)
-            else:
-                x = x + add / max((mask_pos.sum() or len(x)), 1)
+            x = x + (add * (w / s) if s > 0 else add / max(len(x), 1))
         elif sum_x > V + 1e-9:
-            # réduire proportionnellement pour revenir à la cible
+            # ➜ réduire proportionnellement pour revenir à la cible
             x = x * (V / sum_x)
         
         x = np.where(x < 1e-9, 0.0, x)
         df_calc["X_adj (hL)"] = x
+        
 
         cap_resume = f"{volume_cible:.2f} hL au total (2 goûts)"
 
