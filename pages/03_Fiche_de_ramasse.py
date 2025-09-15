@@ -16,8 +16,9 @@ from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 import smtplib
 from email.message import EmailMessage
 
-# === HELPERS EMAIL (avec fallback TOML) =======================================
+# === HELPERS EMAIL (robuste + fallback) =======================================
 import os
+from pathlib import Path
 import streamlit as st
 
 # tomllib (Py 3.11+) ou tomli (Py 3.8–3.10)
@@ -28,33 +29,48 @@ except Exception:
 
 def _load_email_secrets_fallback() -> dict:
     """
-    1) st.secrets['email'] si dispo
-    2) ./.streamlit/secrets.toml (chemin standard Streamlit)
-    3) ./streamlit/secrets.toml (compat dépôt actuel)
+    Priorités:
+      1) st.secrets["email"] (Cloud / local)
+      2) <racine>/.streamlit/secrets.toml
+      3) <racine>/streamlit/secrets.toml (compat ancien dossier)
     """
+    # 1) Secrets “officiels” (Streamlit Cloud UI)
     if "email" in st.secrets:
         return dict(st.secrets.get("email", {}))
 
-    for p in (".streamlit/secrets.toml", "streamlit/secrets.toml"):
-        if os.path.exists(p):
-            try:
+    # 2/3) Fichiers du repo (dev local uniquement)
+    # On calcule la racine du projet depuis app/pages
+    try:
+        proj_root = Path(__file__).resolve().parents[1]
+    except Exception:
+        proj_root = Path(os.getcwd())
+
+    candidates = [
+        proj_root / ".streamlit" / "secrets.toml",
+        proj_root / "streamlit" / "secrets.toml",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
                 with open(p, "rb") as f:
                     data = _toml.load(f)
                 if isinstance(data, dict) and "email" in data:
                     return dict(data["email"] or {})
-            except Exception:
-                pass
+        except Exception:
+            continue
     return {}
 
 def _get_email_cfg():
     cfg = _load_email_secrets_fallback()
-    required = ("host","port","user","password")
+    required = ("host", "port", "user", "password")
     missing = [k for k in required if not str(cfg.get(k, "")).strip()]
     if missing:
-        # L’UI peut rester utilisable (saisie manuelle), mais on explique
-        raise RuntimeError("Secrets email manquants: " + ", ".join(missing))
+        # L’UI reste utilisable (saisie manuelle), mais on explique la cause
+        raise RuntimeError(
+            "Secrets email manquants: " + ", ".join(missing) +
+            " — place le bloc [email] dans Settings → Secrets (Cloud) ou .streamlit/secrets.toml (local)."
+        )
     cfg.setdefault("sender", cfg["user"])
-    # normalise recipients (liste)
     rec = cfg.get("recipients", [])
     if isinstance(rec, str):
         rec = [x.strip() for x in rec.split(",") if x.strip()]
