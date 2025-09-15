@@ -72,6 +72,9 @@ with st.sidebar:
 st.caption(
     f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours**"
 )
+# Nombre de goûts effectif : on garantit que tous les 'forcés' rentrent
+effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_gouts
+
 
 # ---------------- Calculs ----------------
 try:
