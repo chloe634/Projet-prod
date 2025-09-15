@@ -380,9 +380,6 @@ if st.button("🧾 Télécharger la version PDF", use_container_width=True):
             st.error(f"Erreur PDF : {e}")
 
 
-# Après la génération du PDF
-st.session_state["fiche_ramasse_pdf"] = pdf_bytes
-
 # === ENVOI PAR E-MAIL : à coller en bas de l'onglet Fiche de ramasse =========
 
 # 1) Trouver la colonne "palettes" et calculer le total
