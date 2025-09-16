@@ -47,19 +47,6 @@ except KeyError as e:
 df_in["Produit"] = df_in["Produit"].astype(str)
 df_in = sanitize_gouts(df_in)
 
-with st.expander("🔎 Debug formats reconnus (temporaire)"):
-    from core.optimizer import parse_stock, is_allowed_format
-    _tmp = df_in[["GoutCanon","Stock"]].copy()
-    _tmp[["__nb","__volL"]] = _tmp["Stock"].apply(parse_stock).apply(pd.Series)
-    _tmp["__ok"] = _tmp.apply(lambda r: is_allowed_format(r["__nb"], r["__volL"], str(r["Stock"])), axis=1)
-    st.write("Comptes par goût (formats producibles seulement) :")
-    st.dataframe(
-        _tmp[_tmp["__ok"]].groupby("GoutCanon")["Stock"].count().rename("lignes OK").sort_values(ascending=False)
-    )
-    st.write("Menthe citron vert — détails :")
-    st.dataframe(_tmp[_tmp["GoutCanon"].str.lower()=="menthe citron vert"][["Stock","__nb","__volL","__ok"]])
-
-
 # ---------------- Sidebar (paramètres) ----------------
 with st.sidebar:
     st.header("Paramètres")
@@ -117,6 +104,15 @@ except TypeError:
 # Affiche l’avertissement si l’algorithme a ajusté la sélection
 if note_msg:
     st.warning(note_msg)
+
+with st.expander("🔎 Debug volumes par goût (après compute_plan)", expanded=True):
+    try:
+        if isinstance(df_calc, pd.DataFrame) and "GoutCanon" in df_calc.columns:
+            st.dataframe(
+                df_calc.groupby("GoutCanon")[["Volume vendu (hl)","Volume produit arrondi (hL)"]].sum()
+            )
+    except Exception as e:
+        st.exception(e)
 
 
 # ---------------- KPIs ----------------
