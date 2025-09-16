@@ -402,59 +402,47 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
             order = [g for g in agg.index if g in gouts_cibles]
             gouts_cibles = order[:nb_gouts]
 
-
-    # --- Ajustement "pas de mix infusion+kefir si nb_gouts=2" (NEW) ---
+        # --- Contrainte dure : si 2 goûts → même catégorie (Infusion OU Kéfir) ---
     if nb_gouts == 2 and len(gouts_cibles) == 2:
-        cat_set = { _category(g) for g in gouts_cibles }
-        if len(cat_set) > 1:
-            # On cherche la meilleure paire de même catégorie en respectant l'ordre d'urgence d'agg
-            # 1) Catégorie du plus urgent (1er de agg parmi les deux)
-            ordered = [g for g in agg.index if g in set(gouts_cibles)]
-            first = ordered[0] if ordered else gouts_cibles[0]
-            target_cat = _category(first)
-            
         def _rank_candidates_for_category(cat: str) -> list[str]:
-            # Tous les goûts de la catégorie, dans l’ordre actuel d’agg
-            base = [g for g in agg.index if _category(g) == cat]
-            # 1) priorité: rupture sous 7j OU perte > 0€
-            need = [g for g in base
-                    if bool(agg.loc[g, "rupture_semaine"]) or float(agg.loc[g, "perte_7j"]) > 0]
-            # 2) ensuite: demande positive
-            posv = [g for g in base
-                    if (float(agg.loc[g, "vitesse_j"]) > 0) and (g not in need)]
-            # 3) le reste
-            rest = [g for g in base if (g not in need) and (g not in posv)]
-            return need + posv + rest
+            """
+            Retourne les goûts de la catégorie triés comme le global :
+            rupture (desc) → perte_7j (desc) → autonomie (asc).
+            """
+            pool = [g for g in agg.index if _category(g) == cat]
+            if not pool:
+                return []
+            sub = agg.loc[pool, ["rupture_semaine", "perte_7j", "autonomie_j"]].copy()
+            sub["__key__"] = list(sub.index)
+            sub = sub.sort_values(
+                by=["rupture_semaine", "perte_7j", "autonomie_j"],
+                ascending=[False, False, True]
+            )
+            return sub["__key__"].tolist()
 
-            # 2) Liste candidates de la catégorie choisie (dans l'ordre agg)
-            same_cat_all = _rank_candidates_for_category(target_cat)
-            if len(same_cat_all) >= 2:
-                new_pair = same_cat_all[:2]
-                if set(new_pair) != set(gouts_cibles):
-                    note_msg = (
-                        "⚠️ Contrainte appliquée : pas de co-production **Infusion + Kéfir**. "
-                        f"Sélection ajustée → deux recettes **{ 'Infusion' if target_cat=='infusion' else 'Kéfir' }** "
-                        f"({new_pair[0]} ; {new_pair[1]})."
-                    )
-                gouts_cibles = new_pair
+        cats = ["infusion", "kefir"]
+        ranked_by_cat = {c: _rank_candidates_for_category(c) for c in cats}
+        valid = [c for c in cats if len(ranked_by_cat[c]) >= 2]
+
+        if valid:
+            if len(valid) == 1:
+                choose = valid[0]
             else:
-                # Pas 2 goûts dans la même catégorie que le plus urgent → on tente l'autre catégorie
-                other_cat = "kefir" if target_cat == "infusion" else "infusion"
-                other_all = _rank_candidates_for_category(other_cat)
-                if len(other_all) >= 2:
-                    gouts_cibles = other_all[:2]
-                    note_msg = (
-                        "⚠️ Contrainte appliquée : pas de co-production **Infusion + Kéfir**. "
-                        "La catégorie initiale ne contenait pas 2 goûts disponibles ; "
-                        f"sélection basculée sur deux recettes **{ 'Infusion' if other_cat=='infusion' else 'Kéfir' }** "
-                        f"({gouts_cibles[0]} ; {gouts_cibles[1]})."
-                    )
-                else:
-                    # Impossible de satisfaire strictement la contrainte (ex: 1 seul goût total)
-                    note_msg = (
-                        "⚠️ Contrainte non pleinement satisfaisable : moins de deux goûts disponibles dans une même recette. "
-                        "Vérifie les filtres/forçages ou ajoute des produits."
-                    )
+                # Choisit la catégorie dont le meilleur candidat est le plus prioritaire globalement
+                order_global = list(agg.index)
+                pos = {c: order_global.index(ranked_by_cat[c][0]) for c in valid}
+                choose = min(valid, key=lambda c: pos[c])  # plus petit index = plus prioritaire
+
+            new_pair = ranked_by_cat[choose][:2]
+            if set(new_pair) != set(gouts_cibles):
+                note_msg = (
+                    "⚠️ Contrainte appliquée : pas de co-production **Infusion + Kéfir**. "
+                    f"Sélection ajustée → deux recettes **{ 'Infusion' if choose=='infusion' else 'Kéfir' }** "
+                    f"({new_pair[0]} ; {new_pair[1]})."
+                )
+            gouts_cibles = new_pair
+        # sinon : impossible d'avoir 2 goûts dans une même catégorie → on garde tel quel
+
 
     df_selected = df[df["GoutCanon"].isin(gouts_cibles)].copy()
     if len(gouts_cibles) == 0:
