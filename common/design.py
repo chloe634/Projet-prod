@@ -45,8 +45,6 @@ def slugify(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     return s
 
-IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-
 def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
     """
     Ordre:
