@@ -369,38 +369,38 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
     )
-# --- Sélection initiale : prioriser rupture semaine, puis pertes, puis autonomie ---
-# vitesse moyenne par goût (hL/j)
-agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
-dem7 = 7.0 * agg["vitesse_j"]
-
-# vrai si rupture sous 7 jours si on ne produit pas
-agg["rupture_semaine"] = agg["stock_hl"] < dem7 - 1e-9
-
-# pertes 7j à prix de référence (si tu veux le passer depuis l’UI, remplace 400.0)
-PRICE_REF = 400.0
-agg["perte_7j"] = np.maximum(dem7 - agg["stock_hl"], 0.0) * PRICE_REF
-
-# autonomie estimée en jours
-agg["autonomie_j"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
-
-# ordre : rupture (d’abord) → perte décroissante → autonomie croissante
-# (on utilise iloc[::-1] pour avoir rupture=True en haut après le tri)
-agg = agg.sort_values(
-    by=["rupture_semaine", "perte_7j", "autonomie_j"],
-    ascending=[False, True, True]
-).iloc[::-1]
-
-if not manual_keep:
-    # prend d'abord tous les goûts en rupture, puis complète
-    g_rupt  = [g for g, r in zip(agg.index.tolist(), agg["rupture_semaine"].tolist()) if r]
-    g_other = [g for g, r in zip(agg.index.tolist(), agg["rupture_semaine"].tolist()) if not r]
-    gouts_cibles = (g_rupt + g_other)[:nb_gouts]
-else:
-    gouts_cibles = sorted(set(df["GoutCanon"]))
-    if len(gouts_cibles) > nb_gouts:
-        order = [g for g in agg.index if g in gouts_cibles]
-        gouts_cibles = order[:nb_gouts]
+    # --- Sélection initiale : prioriser rupture semaine, puis pertes, puis autonomie ---
+    # vitesse moyenne par goût (hL/j)
+    agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
+    dem7 = 7.0 * agg["vitesse_j"]
+    
+    # vrai si rupture sous 7 jours si on ne produit pas
+    agg["rupture_semaine"] = agg["stock_hl"] < dem7 - 1e-9
+    
+    # pertes 7j à prix de référence (si tu veux le passer depuis l’UI, remplace 400.0)
+    PRICE_REF = 400.0
+    agg["perte_7j"] = np.maximum(dem7 - agg["stock_hl"], 0.0) * PRICE_REF
+    
+    # autonomie estimée en jours
+    agg["autonomie_j"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
+    
+    # ordre : rupture (d’abord) → perte décroissante → autonomie croissante
+    # (on utilise iloc[::-1] pour avoir rupture=True en haut après le tri)
+    agg = agg.sort_values(
+        by=["rupture_semaine", "perte_7j", "autonomie_j"],
+        ascending=[False, True, True]
+    ).iloc[::-1]
+    
+    if not manual_keep:
+        # prend d'abord tous les goûts en rupture, puis complète
+        g_rupt  = [g for g, r in zip(agg.index.tolist(), agg["rupture_semaine"].tolist()) if r]
+        g_other = [g for g, r in zip(agg.index.tolist(), agg["rupture_semaine"].tolist()) if not r]
+        gouts_cibles = (g_rupt + g_other)[:nb_gouts]
+    else:
+        gouts_cibles = sorted(set(df["GoutCanon"]))
+        if len(gouts_cibles) > nb_gouts:
+            order = [g for g in agg.index if g in gouts_cibles]
+            gouts_cibles = order[:nb_gouts]
 
 
     # --- Ajustement "pas de mix infusion+kefir si nb_gouts=2" (NEW) ---
