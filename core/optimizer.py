@@ -390,156 +390,91 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         raise ValueError("Aucun goût sélectionné.")
 
     df_calc = df_selected.copy()
-    if nb_gouts == 1:
-        df_calc["Somme ventes (hL) par goût"] = df_calc.groupby("GoutCanon")["Volume vendu (hl)"].transform("sum")
-        if repartir_pro_rv:
-            df_calc["r_i"] = np.where(df_calc["Somme ventes (hL) par goût"] > 0,
-                                      df_calc["Volume vendu (hl)"] / df_calc["Somme ventes (hL) par goût"], 0.0)
-           else:
-        # ====== Allocation multi-goûts : égalisation d'autonomie (water-filling) ======
-        V = float(volume_cible)
-        df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
+df_calc = df_selected.copy()
 
-        # Stats par GOÛT sélectionné
-        per_g = df_calc.groupby("GoutCanon").agg(
-            ventes_hl=("Volume vendu (hl)", "sum"),
-            stock_hl=("Volume disponible (hl)", "sum"),
+# === CAS 1 goût : on répartit seulement entre formats du même goût ===
+if nb_gouts == 1:
+    # somme des ventes du goût
+    df_calc["Somme ventes (hL) par goût"] = df_calc.groupby("GoutCanon")["Volume vendu (hl)"].transform("sum")
+
+    # poids intra-goût
+    if repartir_pro_rv & (df_calc["Somme ventes (hL) par goût"] > 0).any():
+        df_calc["r_i"] = np.where(
+            df_calc["Somme ventes (hL) par goût"] > 0,
+            df_calc["Volume vendu (hl)"] / df_calc["Somme ventes (hL) par goût"],
+            0.0,
         )
-        per_g["vitesse_j"] = per_g["ventes_hl"] / max(float(window_days), 1.0)
-
-        # on ne peut pas égaliser pour vitesse=0 → ces goûts ne consomment pas
-        speeds = per_g["vitesse_j"].to_numpy(float)
-        stocks = per_g["stock_hl"].to_numpy(float)
-        gout_index = list(per_g.index)
-
-        # fonction besoin total pour un horizon T
-        def need_for(T: float) -> float:
-            return float(np.maximum(0.0, T * speeds - stocks).sum())
-
-        # bornes binaires
-        if np.all(speeds <= 0):
-            # aucun débit : rien à produire (sécurité)
-            Xg = np.zeros_like(speeds)
-        else:
-            # T bas : autonomie actuelle max
-            with np.errstate(divide='ignore', invalid='ignore'):
-                aut = np.where(speeds > 0, stocks / speeds, 0.0)
-            T_lo = float(np.nanmax(aut)) if np.isfinite(aut).any() else 0.0
-            # T hi : surestimée, on élargit tant que besoin < V
-            T_hi = T_lo + max(1.0, V / max(speeds.sum(), 1e-9)) * 4.0
-            for _ in range(32):
-                if need_for(T_hi) >= V: break
-                T_hi *= 2.0
-
-            # recherche binaire
-            for _ in range(60):
-                T_mid = 0.5 * (T_lo + T_hi)
-                if need_for(T_mid) >= V:
-                    T_hi = T_mid
-                else:
-                    T_lo = T_mid
-            T = 0.5 * (T_lo + T_hi)
-            Xg = np.maximum(0.0, T * speeds - stocks)
-
-            # ajuste au total (petit epsilon numérique)
-            sX = Xg.sum()
-            if sX > 0:
-                Xg *= V / sX
-
-        # Xg est la cible (hL) pour CHAQUE GOÛT → répartir aux lignes du goût
-        df_calc["X_adj (hL)"] = 0.0
-
-        for g, Xg_target in zip(gout_index, Xg):
-            grp = df_calc[df_calc["GoutCanon"] == g]
-            idx = grp.index
-
-            # poids internes : prorata des ventes dans le goût (sinon égalitaire)
-            if repartir_pro_rv:
-                s = float(grp["Volume vendu (hl)"].sum())
-                if s > 1e-12:
-                    w_in = grp["Volume vendu (hl)"] / s
-                else:
-                    w_in = pd.Series(1.0 / len(grp), index=idx)
-            else:
-                w_in = pd.Series(1.0 / len(grp), index=idx)
-
-            # répartition simple au prorata interne (ok car on a déjà égalisé entre goûts)
-            x = w_in.to_numpy(float) * float(Xg_target)
-
-            # assure non-négatif
-            x = np.maximum(x, 0.0)
-
-            # petit ajustement pour coller exactement la cible sur ce goût
-            diff = float(Xg_target) - float(x.sum())
-            if abs(diff) > 1e-9 and len(x) > 0:
-                x[0] += diff  # correction minuscule
-
-            df_calc.loc[idx, "X_adj (hL)"] = x
-
-        cap_resume = f"{volume_cible:.2f} hL au total (autonomie égale entre {len(per_g)} goûts)"
-
     else:
-        # --------- PARTAGE DE LA CIBLE ENTRE LES GOÛTS (phase 1) ----------
-        V = float(volume_cible)
-        df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
+        # égalitaire si pas de ventes
+        df_calc["r_i"] = 1.0 / df_calc.groupby("GoutCanon")["GoutCanon"].transform("count")
 
-        # poids par goût (ventes si dispo, sinon égalitaire)
-        ventes_par_gout = df_calc.groupby("GoutCanon")["Volume vendu (hl)"].sum()
-        n_gouts = max(len(ventes_par_gout), 1)
-        
-        # ⚖️ Partage entre goûts :
-        # - si TOUS les goûts ont des ventes > 0 et que "prorata" est coché → prorata des ventes
-        # - sinon → partage égalitaire (assure un volume non nul pour chaque goût sélectionné)
-        if repartir_pro_rv and float(ventes_par_gout.sum()) > 0 and (ventes_par_gout > 0).all():
-            w_gout = ventes_par_gout / ventes_par_gout.sum()
+    # besoin par ligne pour ajouter 'volume_cible' sur ce goût
+    Gg = df_calc.groupby("GoutCanon")["Volume disponible (hl)"].transform("sum")
+    x = df_calc["r_i"] * (Gg + float(volume_cible)) - df_calc["Volume disponible (hl)"]
+    df_calc["X_adj (hL)"] = np.maximum(x, 0.0)
+
+    cap_resume = f"{float(volume_cible):.2f} hL au total (1 goût)"
+
+# === CAS 2 goûts : égalisation d'autonomie (water-filling) entre goûts ===
+else:
+    V = float(volume_cible)
+    df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
+
+    # stats par goût
+    per_g = df_calc.groupby("GoutCanon").agg(
+        ventes_hl=("Volume vendu (hl)", "sum"),
+        stock_hl=("Volume disponible (hl)", "sum"),
+    )
+    per_g["vitesse_j"] = per_g["ventes_hl"] / max(float(window_days), 1.0)
+
+    speeds = per_g["vitesse_j"].to_numpy(float)
+    stocks = per_g["stock_hl"].to_numpy(float)
+    gout_index = list(per_g.index)
+
+    def need_for(T: float) -> float:
+        # volume à produire pour que chaque goût atteigne l’autonomie T
+        return float(np.maximum(0.0, T * speeds - stocks).sum())
+
+    if np.all(speeds <= 0):
+        Xg = np.zeros_like(speeds)
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            aut = np.where(speeds > 0, stocks / speeds, 0.0)
+        T_lo = float(np.nanmax(aut)) if np.isfinite(aut).any() else 0.0
+        T_hi = T_lo + max(1.0, V / max(speeds.sum(), 1e-9)) * 4.0
+        for _ in range(32):
+            if need_for(T_hi) >= V:
+                break
+            T_hi *= 2.0
+        for _ in range(60):
+            T_mid = 0.5 * (T_lo + T_hi)
+            if need_for(T_mid) >= V:
+                T_hi = T_mid
+            else:
+                T_lo = T_mid
+        T = 0.5 * (T_lo + T_hi)
+        Xg = np.maximum(0.0, T * speeds - stocks)
+        sX = Xg.sum()
+        if sX > 0:
+            Xg *= V / sX  # ajuste exactement au volume cible
+
+    # Répartition intra-goût (prorata des ventes si demandé, sinon égalitaire)
+    df_calc["X_adj (hL)"] = 0.0
+    for g, Xg_target in zip(gout_index, Xg):
+        grp = df_calc[df_calc["GoutCanon"] == g]
+        idx = grp.index
+        if repartir_pro_rv and float(grp["Volume vendu (hl)"].sum()) > 0:
+            w_in = grp["Volume vendu (hl)"] / float(grp["Volume vendu (hl)"].sum())
         else:
-            w_gout = pd.Series(1.0 / n_gouts, index=ventes_par_gout.index)
+            w_in = pd.Series(1.0 / len(grp), index=idx)
+        x = np.maximum(w_in.to_numpy(float) * float(Xg_target), 0.0)
+        # petit ajustement pour coller pile à la cible du goût
+        diff = float(Xg_target) - float(x.sum())
+        if abs(diff) > 1e-9 and len(x) > 0:
+            x[0] += diff
+        df_calc.loc[idx, "X_adj (hL)"] = x
 
-
-        # --------- POIDS À L’INTÉRIEUR DE CHAQUE GOÛT (phase 2) ----------
-        def _weights_inside(grp_df: pd.DataFrame) -> pd.Series:
-            if repartir_pro_rv:
-                s = float(grp_df["Volume vendu (hl)"].sum())
-                if s > 0:
-                    return grp_df["Volume vendu (hl)"] / s
-            # égalitaire si pas de ventes
-            n = max(len(grp_df), 1)
-            return pd.Series([1.0 / n] * n, index=grp_df.index)
-
-        df_calc["w_in"] = (
-            df_calc.groupby("GoutCanon", group_keys=False)
-                   .apply(_weights_inside)
-        )
-
-        # --------- ALLOCATION PAR GOÛT (respect strict de la cible V) -----
-        df_calc["X_adj (hL)"] = 0.0
-        for g, grp in df_calc.groupby("GoutCanon"):
-            idx = grp.index
-            Vg = V * float(w_gout.get(g, 0.0))  # cible pour ce goût
-            Gg = float(grp["G_i (hL)"].sum())   # stock total de ce goût
-
-            w_in = grp["w_in"].to_numpy(float)
-            Gi   = grp["G_i (hL)"].to_numpy(float)
-
-            # besoin théorique ligne: w_in * (Gg + Vg) - Gi
-            x = w_in * (Gg + Vg) - Gi
-            x = np.maximum(x, 0.0)
-
-            sum_x = x.sum()
-            if sum_x < Vg - 1e-9:
-                # on complète au prorata des poids internes (même pour les lignes à 0)
-                s = w_in.sum()
-                add = Vg - sum_x
-                x = x + (add * (w_in / s) if s > 0 else add / max(len(x), 1))
-            elif sum_x > Vg + 1e-9:
-                # on réduit proportionnellement pour revenir à la cible
-                x = x * (Vg / sum_x)
-
-            x = np.where(x < 1e-9, 0.0, x)
-            df_calc.loc[idx, "X_adj (hL)"] = x
-
-        cap_resume = f"{volume_cible:.2f} hL au total (2 goûts)"
-
+    cap_resume = f"{float(volume_cible):.2f} hL au total (autonomie égale entre {len(per_g)} goûts)"
 
     df_calc["Cartons à produire (exact)"] = df_calc["X_adj (hL)"] / df_calc["Volume/carton (hL)"]
     if ROUND_TO_CARTON:
