@@ -10,7 +10,8 @@ from common.design import apply_theme, section, kpi, find_image_path, load_image
 from common.data import get_paths
 from core.optimizer import (
     load_flavor_map_from_path,
-    apply_canonical_flavor, sanitize_gouts,
+    apply_canonical_flavor, 
+    sanitize_gouts,
     compute_plan,
 )
 from common.xlsx_fill import fill_fiche_7000L_xlsx
