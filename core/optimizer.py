@@ -1,3 +1,4 @@
+# core/optimizer.py
 import io, re
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -37,7 +38,7 @@ def _pick_column(df: pd.DataFrame, candidates_norm: list[str]) -> str | None:
             if n.startswith(key):
                 return norm_to_real[n]
 
-    # 3) contains (au cas où un préfixe/ suffixe se glisse)
+    # 3) contains (au cas où un préfixe/suffixe se glisse)
     for key in KEY_PREFIXES:
         for n in norms:
             if key in n:
@@ -54,14 +55,14 @@ def _pick_column(df: pd.DataFrame, candidates_norm: list[str]) -> str | None:
     return None
 
 
-# ======= tes constantes
+# ======= constantes
 ALLOWED_FORMATS = {(12, 0.33), (6, 0.75), (4, 0.75)}
 ROUND_TO_CARTON = True
 VOL_TOL = 0.02
 EPS = 1e-9
 DEFAULT_WINDOW_DAYS = 60
 
-# ---------- Helpers sélection et égalisation globale ----------
+# ---------- Helpers sélection et égalisation ----------
 
 def _weekly_perte(stock_hl: float, vitesse_hl_j: float, price_hL: float = 400.0) -> float:
     """Perte € sur 7 jours si on ne produit pas : max(demande7 - stock, 0) * prix."""
@@ -71,7 +72,7 @@ def _weekly_perte(stock_hl: float, vitesse_hl_j: float, price_hL: float = 400.0)
 
 def _equalize_last_batch_global(Gi: np.ndarray, vi: np.ndarray, V: float) -> np.ndarray:
     """
-    Égalise un horizon unique T sur T = (Gi + xi)/vi pour T commun.
+    Égalise un horizon unique T sur T = (Gi + xi)/vi pour un groupe donné.
     Résout sum_i max(0, T*vi - Gi) = V par dichotomie (xi >= 0).
     Retourne x (hL) par ligne.
     """
@@ -80,15 +81,14 @@ def _equalize_last_batch_global(Gi: np.ndarray, vi: np.ndarray, V: float) -> np.
     if V <= 1e-12 or vi.sum() <= 1e-12:
         return np.zeros_like(Gi)
 
-    # bornes : T_min = max(Gi/vi) sur vi>0 (horizon sans prod), T_max = T_min + marge
+    # bornes : T_min = max(Gi/vi) (horizon sans prod), T_max = T_min + marge
     with np.errstate(divide='ignore', invalid='ignore'):
         T0 = np.nanmax(np.where(vi > 0, Gi / np.maximum(vi, 1e-12), 0.0))
     T_lo = T0
-    # borne haute large : si on ajoutait tout V sur la ligne la plus rapide
-    T_hi = T0 + (V / max(np.max(vi), 1e-12)) + 365.0  # + marge 1 an
+    T_hi = T0 + (V / max(np.max(vi), 1e-12)) + 365.0  # marge large
 
     # dichotomie
-    for _ in range(80):  # précision suffisante
+    for _ in range(80):
         T_mid = 0.5 * (T_lo + T_hi)
         x = np.maximum(T_mid * vi - Gi, 0.0)
         s = x.sum()
@@ -98,14 +98,14 @@ def _equalize_last_batch_global(Gi: np.ndarray, vi: np.ndarray, V: float) -> np.
             T_lo = T_mid
     x = np.maximum(T_lo * vi - Gi, 0.0)
 
-    # ajuste à la somme V (petit rescale si nécessaire)
+    # petit rescale pour coller à V
     s = x.sum()
     if s > 0:
         x *= (V / s)
     return x
 
 
-# ======= util accents (ton fix_text)
+# ======= util accents (fix_text)
 ACCENT_CHARS = "éèêëàâäîïôöùûüçÉÈÊËÀÂÄÎÏÔÖÙÛÜÇ"
 CUSTOM_REPLACEMENTS = {
     "M�lisse": "Mélisse",
@@ -171,7 +171,7 @@ def parse_days_from_b2(value) -> Optional[int]:
                 days = int((d2 - d1).days)
                 return days if days > 0 else None
         m3 = re.search(r"\b(\d{1,4})\b", s)
-        if m3: 
+        if m3:
             v = int(m3.group(1));  return v if v > 0 else None
     except Exception:
         return None
@@ -227,13 +227,12 @@ def apply_canonical_flavor(df: pd.DataFrame, fm: pd.DataFrame) -> pd.DataFrame:
 
     # 1) Trouve la colonne "Produit" même si le nom diffère (Désignation, Libellé, Product, etc.)
     prod_candidates = [
-    "produit", "produit 1", "produit1", "produit 2",  # tolère 'Produit 1/2'
-    "designation", "désignation", "libelle", "libellé",
-    "nom du produit", "product", "sku libelle", "sku libellé", "sku", "item"
+        "produit", "produit 1", "produit1", "produit 2",
+        "designation", "désignation", "libelle", "libellé",
+        "nom du produit", "product", "sku libelle", "sku libellé", "sku", "item"
     ]
     prod_candidates = [_norm_colname(x) for x in prod_candidates]
     col_prod = _pick_column(out, prod_candidates)
-
 
     if not col_prod:
         # message clair si rien n'est trouvé
@@ -248,7 +247,7 @@ def apply_canonical_flavor(df: pd.DataFrame, fm: pd.DataFrame) -> pd.DataFrame:
     out["Produit"] = out[col_prod].astype(str).map(fix_text)
     out["Produit_norm"] = out["Produit"].str.strip()
 
-    # 3) Mapping canonique (inchangé)
+    # 3) Mapping canonique
     if len(fm):
         fm = fm.dropna(subset=["name","canonical"]).copy()
         fm["name_norm"] = fm["name"].astype(str).map(fix_text).str.strip().str.lower()
@@ -328,20 +327,18 @@ def sanitize_gouts(df: pd.DataFrame) -> pd.DataFrame:
     mask &= ~out["GoutCanon"].isin(BLOCKED_LABELS_EXACT)
     return out.loc[mask].reset_index(drop=True)
 
-# ======= tes calculs (inchangés)
+# ======= calculs principaux
 def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, manual_keep, exclude_list):
     required = ["Produit", "GoutCanon", "Stock", "Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]
     miss = [c for c in required if c not in df_in.columns]
     if miss: raise ValueError(f"Colonnes manquantes: {miss}")
 
-    # --- helper catégorie (NEW) ---
+    # --- helper catégorie ---
     def _category(g: str) -> str:
         s = str(g or "").strip().lower()
-        # Tout ce qui contient 'infusion' -> infusion ; sinon on considère 'kéfir'
-        # (tes canoniques sont du type 'Infusion Mélisse', 'Mangue Passion', 'Gingembre', etc.)
         return "infusion" if "infusion" in s else "kefir"
 
-    note_msg = ""  # NEW: message d’ajustement à renvoyer à l’UI
+    note_msg = ""  # message d’ajustement à renvoyer à l’UI
 
     df = df_in[required].copy()
     for c in ["Quantité vendue", "Volume vendu (hl)", "Quantité disponible", "Volume disponible (hl)"]:
@@ -365,34 +362,26 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         keep = {g.strip() for g in manual_keep}
         df = df[df["GoutCanon"].astype(str).str.strip().isin(keep)]
 
+    # --- agrégats par goût ---
     agg = df.groupby("GoutCanon").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
     )
-    # --- Sélection initiale : prioriser rupture semaine, puis pertes, puis autonomie ---
-    # vitesse moyenne par goût (hL/j)
+
+    # --- Sélection : rupture -> perte € -> autonomie ---
     agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
     dem7 = 7.0 * agg["vitesse_j"]
-    
-    # vrai si rupture sous 7 jours si on ne produit pas
     agg["rupture_semaine"] = agg["stock_hl"] < dem7 - 1e-9
-    
-    # pertes 7j à prix de référence (si tu veux le passer depuis l’UI, remplace 400.0)
     PRICE_REF = 400.0
     agg["perte_7j"] = np.maximum(dem7 - agg["stock_hl"], 0.0) * PRICE_REF
-    
-    # autonomie estimée en jours
     agg["autonomie_j"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
-    
-    # ordre : rupture (d’abord) → perte décroissante → autonomie croissante
-    # (on utilise iloc[::-1] pour avoir rupture=True en haut après le tri)
+
     agg = agg.sort_values(
         by=["rupture_semaine", "perte_7j", "autonomie_j"],
-        ascending=[False, True, True]
-    ).iloc[::-1]
-    
+        ascending=[False, False, True]
+    )
+
     if not manual_keep:
-        # prend d'abord tous les goûts en rupture, puis complète
         g_rupt  = [g for g, r in zip(agg.index.tolist(), agg["rupture_semaine"].tolist()) if r]
         g_other = [g for g, r in zip(agg.index.tolist(), agg["rupture_semaine"].tolist()) if not r]
         gouts_cibles = (g_rupt + g_other)[:nb_gouts]
@@ -402,13 +391,10 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
             order = [g for g in agg.index if g in gouts_cibles]
             gouts_cibles = order[:nb_gouts]
 
-        # --- Contrainte dure : si 2 goûts → même catégorie (Infusion OU Kéfir) ---
+    # --- Contrainte dure : si 2 goûts → même catégorie (Infusion OU Kéfir) ---
     if nb_gouts == 2 and len(gouts_cibles) == 2:
         def _rank_candidates_for_category(cat: str) -> list[str]:
-            """
-            Retourne les goûts de la catégorie triés comme le global :
-            rupture (desc) → perte_7j (desc) → autonomie (asc).
-            """
+            """Tri interne: rupture (desc) → perte € (desc) → autonomie (asc)."""
             pool = [g for g in agg.index if _category(g) == cat]
             if not pool:
                 return []
@@ -428,10 +414,9 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
             if len(valid) == 1:
                 choose = valid[0]
             else:
-                # Choisit la catégorie dont le meilleur candidat est le plus prioritaire globalement
                 order_global = list(agg.index)
                 pos = {c: order_global.index(ranked_by_cat[c][0]) for c in valid}
-                choose = min(valid, key=lambda c: pos[c])  # plus petit index = plus prioritaire
+                choose = min(valid, key=lambda c: pos[c])  # meilleur candidat global
 
             new_pair = ranked_by_cat[choose][:2]
             if set(new_pair) != set(gouts_cibles):
@@ -441,33 +426,38 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
                     f"({new_pair[0]} ; {new_pair[1]})."
                 )
             gouts_cibles = new_pair
-        # sinon : impossible d'avoir 2 goûts dans une même catégorie → on garde tel quel
-
+        # sinon : pas 2 goûts dispo dans une même catégorie → on garde tel quel
 
     df_selected = df[df["GoutCanon"].isin(gouts_cibles)].copy()
     if len(gouts_cibles) == 0:
         raise ValueError("Aucun goût sélectionné.")
 
-
-        # ---- ALLOCATION GLOBALE : égalise l'horizon de fin T sur toutes les lignes sélectionnées ----
+    # ---- ALLOCATION PAR GOÛT : égalise le jour d'épuisement entre formats d'un même goût ----
     df_calc = df_selected.copy()
-
-    # vitesse par ligne (hL/j)
     df_calc["v_i"] = df_calc["Volume vendu (hl)"] / max(float(window_days), 1.0)
     df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
-    V = float(volume_cible)  # volume total à produire (hL) réparti sur toutes les lignes sélectionnées
+    V_tot = float(volume_cible)
 
-    # x_i (hL) qui égalisent (G_i + x_i)/v_i = T commun
-    x = _equalize_last_batch_global(
-        Gi=df_calc["G_i (hL)"].to_numpy(float),
-        vi=df_calc["v_i"].to_numpy(float),
-        V=V,
-    )
-    df_calc["X_adj (hL)"] = np.maximum(x, 0.0)
+    # Partage du volume entre goûts (prorata ventes si dispo, sinon égalitaire)
+    ventes_par_gout = df_calc.groupby("GoutCanon")["Volume vendu (hl)"].sum()
+    pos = ventes_par_gout > 0
+    if repartir_pro_rv and pos.any():
+        w_gout = (ventes_par_gout[pos] / ventes_par_gout[pos].sum()).reindex(ventes_par_gout.index, fill_value=0.0)
+    else:
+        n = max(len(ventes_par_gout), 1)
+        w_gout = pd.Series(1.0 / n, index=ventes_par_gout.index)
 
-    cap_resume = f"{volume_cible:.2f} hL au total (horizon d'épuisement égalisé)"
+    df_calc["X_adj (hL)"] = 0.0
+    for g, grp in df_calc.groupby("GoutCanon"):
+        Vg = V_tot * float(w_gout.get(g, 0.0))
+        Gi = grp["G_i (hL)"].to_numpy(float)
+        vi = np.maximum(grp["v_i"].to_numpy(float), 0.0)
+        xg = _equalize_last_batch_global(Gi, vi, Vg)  # égalise (Gi+x_i)/v_i = T_g (constant dans le goût)
+        df_calc.loc[grp.index, "X_adj (hL)"] = np.maximum(xg, 0.0)
 
+    cap_resume = f"{volume_cible:.2f} hL au total (égalité du jour d'épuisement par goût)"
 
+    # ---- conversions cartons / bouteilles ----
     df_calc["Cartons à produire (exact)"] = df_calc["X_adj (hL)"] / df_calc["Volume/carton (hL)"]
     if ROUND_TO_CARTON:
         df_calc["Cartons à produire (arrondi)"] = np.floor(df_calc["Cartons à produire (exact)"] + 0.5).astype("Int64")
@@ -486,6 +476,7 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         "Volume produit arrondi (hL)"
     ]].sort_values(["GoutCanon", "Produit", "Stock"]).reset_index(drop=True)
 
+    # ---- synthèse sélection ----
     agg_full = df.groupby("GoutCanon").agg(
         ventes_hl=("Volume vendu (hl)", "sum"),
         stock_hl=("Volume disponible (hl)", "sum")
@@ -502,8 +493,10 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         "jours_autonomie": "Autonomie (jours)",
         "score_urgence": "Score urgence"
     })
-    # NEW: on renvoie note_msg en 7e sortie
+
+    # 7 sorties (comme utilisé par la page Production)
     return df_min, cap_resume, sel_gouts, synth_sel, df_calc, df, note_msg
+
 
 def compute_losses_table_v48(df_in_all: pd.DataFrame, window_days: float, price_hL: float) -> pd.DataFrame:
     out_cols = ["Goût", "Demande 7 j (hL)", "Stock (hL)", "Manque sur 7 j (hL)", "Prix moyen (€/hL)", "Perte (€)"]
