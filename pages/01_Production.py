@@ -10,8 +10,7 @@ from common.design import apply_theme, section, kpi, find_image_path, load_image
 from common.data import get_paths
 from core.optimizer import (
     load_flavor_map_from_path,
-    apply_canonical_flavor, 
-    sanitize_gouts,
+    apply_canonical_flavor, sanitize_gouts,
     compute_plan,
 )
 from common.xlsx_fill import fill_fiche_7000L_xlsx
@@ -73,48 +72,20 @@ with st.sidebar:
 st.caption(
     f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours**"
 )
+
+# ---------------- Calculs ----------------
 # Nombre de goûts effectif : on garantit que tous les 'forcés' rentrent
 effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_gouts
 
-
-# ---------------- Calculs ----------------
-try:
-    # nouvelle version (7 valeurs, avec note_msg)
-    df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all, note_msg = compute_plan(
-        df_in=df_in,
-        window_days=window_days,
-        volume_cible=volume_cible,
-        nb_gouts=effective_nb_gouts,
-        repartir_pro_rv=repartir_pro_rv,
-        manual_keep=forced_gouts or None,
-        exclude_list=excluded_gouts,
-    )
-except TypeError:
-    # ancienne version (6 valeurs, sans note_msg)
-    df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all = compute_plan(
-        df_in=df_in,
-        window_days=window_days,
-        volume_cible=volume_cible,
-        nb_gouts=effective_nb_gouts,
-        repartir_pro_rv=repartir_pro_rv,
-        manual_keep=forced_gouts or None,
-        exclude_list=excluded_gouts,
-    )
-    note_msg = ""
-
-# Affiche l’avertissement si l’algorithme a ajusté la sélection
-if note_msg:
-    st.warning(note_msg)
-
-with st.expander("🔎 Debug volumes par goût (après compute_plan)", expanded=True):
-    try:
-        if isinstance(df_calc, pd.DataFrame) and "GoutCanon" in df_calc.columns:
-            st.dataframe(
-                df_calc.groupby("GoutCanon")[["Volume vendu (hl)","Volume produit arrondi (hL)"]].sum()
-            )
-    except Exception as e:
-        st.exception(e)
-
+df_min, cap_resume, gouts_cibles, synth_sel, df_calc, df_all = compute_plan(
+    df_in=df_in,
+    window_days=window_days,
+    volume_cible=volume_cible,
+    nb_gouts=effective_nb_gouts,         # 👈 prend en compte les 'forcés'
+    repartir_pro_rv=repartir_pro_rv,
+    manual_keep=forced_gouts or None,    # 👈 forçage
+    exclude_list=excluded_gouts,
+)
 
 # ---------------- KPIs ----------------
 total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum()) if "Bouteilles à produire (arrondi)" in df_min.columns else 0
