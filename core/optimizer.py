@@ -412,9 +412,22 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
             ordered = [g for g in agg.index if g in set(gouts_cibles)]
             first = ordered[0] if ordered else gouts_cibles[0]
             target_cat = _category(first)
+            
+        def _rank_candidates_for_category(cat: str) -> list[str]:
+            # Tous les goûts de la catégorie, dans l’ordre actuel d’agg
+            base = [g for g in agg.index if _category(g) == cat]
+            # 1) priorité: rupture sous 7j OU perte > 0€
+            need = [g for g in base
+                    if bool(agg.loc[g, "rupture_semaine"]) or float(agg.loc[g, "perte_7j"]) > 0]
+            # 2) ensuite: demande positive
+            posv = [g for g in base
+                    if (float(agg.loc[g, "vitesse_j"]) > 0) and (g not in need)]
+            # 3) le reste
+            rest = [g for g in base if (g not in need) and (g not in posv)]
+            return need + posv + rest
 
             # 2) Liste candidates de la catégorie choisie (dans l'ordre agg)
-            same_cat_all = [g for g in agg.index if _category(g) == target_cat]
+            same_cat_all = _rank_candidates_for_category(target_cat)
             if len(same_cat_all) >= 2:
                 new_pair = same_cat_all[:2]
                 if set(new_pair) != set(gouts_cibles):
@@ -427,7 +440,7 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
             else:
                 # Pas 2 goûts dans la même catégorie que le plus urgent → on tente l'autre catégorie
                 other_cat = "kefir" if target_cat == "infusion" else "infusion"
-                other_all = [g for g in agg.index if _category(g) == other_cat]
+                other_all = _rank_candidates_for_category(other_cat)
                 if len(other_all) >= 2:
                     gouts_cibles = other_all[:2]
                     note_msg = (
