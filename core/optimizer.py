@@ -328,8 +328,13 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
     agg["vitesse_j"] = agg["ventes_hl"] / max(float(window_days), 1.0)
     agg["jours_autonomie"] = np.where(agg["vitesse_j"] > 0, agg["stock_hl"] / agg["vitesse_j"], np.inf)
     agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)
-    # tri par urgence décroissante
-    agg = agg.sort_values(by=["score_urgence", "jours_autonomie", "ventes_hl"], ascending=[False, True, False])
+    
+    # manque projeté sur 7 jours (formats producibles uniquement)
+    agg["manque7"] = np.clip(7.0 * agg["vitesse_j"] - agg["stock_hl"], a_min=0.0, a_max=None)
+    
+    # Priorité : manque7 décroissant, puis score_urgence en tie-break
+    agg["score_urgence"] = agg["vitesse_j"] / (agg["jours_autonomie"] + EPS)
+    agg = agg.sort_values(by=["manque7", "score_urgence", "ventes_hl"], ascending=[False, False, False])
 
     # --- Sélection initiale (comme avant) ---
     if not manual_keep:
@@ -390,39 +395,89 @@ def compute_plan(df_in, window_days, volume_cible, nb_gouts, repartir_pro_rv, ma
         if repartir_pro_rv:
             df_calc["r_i"] = np.where(df_calc["Somme ventes (hL) par goût"] > 0,
                                       df_calc["Volume vendu (hl)"] / df_calc["Somme ventes (hL) par goût"], 0.0)
-        else:
-            df_calc["r_i"] = 1.0 / df_calc.groupby("GoutCanon")["GoutCanon"].transform("count")
-
+           else:
+        # ====== Allocation multi-goûts : égalisation d'autonomie (water-filling) ======
+        V = float(volume_cible)
         df_calc["G_i (hL)"] = df_calc["Volume disponible (hl)"]
-        df_calc["G_total (hL) par goût"] = df_calc.groupby("GoutCanon")["G_i (hL)"].transform("sum")
-        df_calc["Y_total (hL) par goût"] = df_calc["G_total (hL) par goût"] + float(volume_cible)
-        df_calc["X_th (hL)"] = df_calc["r_i"] * df_calc["Y_total (hL) par goût"] - df_calc["G_i (hL)"]
 
+        # Stats par GOÛT sélectionné
+        per_g = df_calc.groupby("GoutCanon").agg(
+            ventes_hl=("Volume vendu (hl)", "sum"),
+            stock_hl=("Volume disponible (hl)", "sum"),
+        )
+        per_g["vitesse_j"] = per_g["ventes_hl"] / max(float(window_days), 1.0)
+
+        # on ne peut pas égaliser pour vitesse=0 → ces goûts ne consomment pas
+        speeds = per_g["vitesse_j"].to_numpy(float)
+        stocks = per_g["stock_hl"].to_numpy(float)
+        gout_index = list(per_g.index)
+
+        # fonction besoin total pour un horizon T
+        def need_for(T: float) -> float:
+            return float(np.maximum(0.0, T * speeds - stocks).sum())
+
+        # bornes binaires
+        if np.all(speeds <= 0):
+            # aucun débit : rien à produire (sécurité)
+            Xg = np.zeros_like(speeds)
+        else:
+            # T bas : autonomie actuelle max
+            with np.errstate(divide='ignore', invalid='ignore'):
+                aut = np.where(speeds > 0, stocks / speeds, 0.0)
+            T_lo = float(np.nanmax(aut)) if np.isfinite(aut).any() else 0.0
+            # T hi : surestimée, on élargit tant que besoin < V
+            T_hi = T_lo + max(1.0, V / max(speeds.sum(), 1e-9)) * 4.0
+            for _ in range(32):
+                if need_for(T_hi) >= V: break
+                T_hi *= 2.0
+
+            # recherche binaire
+            for _ in range(60):
+                T_mid = 0.5 * (T_lo + T_hi)
+                if need_for(T_mid) >= V:
+                    T_hi = T_mid
+                else:
+                    T_lo = T_mid
+            T = 0.5 * (T_lo + T_hi)
+            Xg = np.maximum(0.0, T * speeds - stocks)
+
+            # ajuste au total (petit epsilon numérique)
+            sX = Xg.sum()
+            if sX > 0:
+                Xg *= V / sX
+
+        # Xg est la cible (hL) pour CHAQUE GOÛT → répartir aux lignes du goût
         df_calc["X_adj (hL)"] = 0.0
-        for _, grp in df_calc.groupby("GoutCanon"):
-            x = grp["X_th (hL)"].to_numpy(float)
-            r = grp["r_i"].to_numpy(float)
-        
-            # clamp à 0 (on ne "déproduit" pas)
-            x = np.maximum(x, 0.0)
-        
-            # somme vs cible
-            V = float(volume_cible)
-            sum_x = x.sum()
-            deficit = V - sum_x
-        
-            if deficit > 1e-9:
-                # on complète au prorata r
-                r = np.where(r > 0, r, 0); s = r.sum()
-                x = x + (deficit * (r / s) if s > 0 else deficit / max(len(x), 1))
-            elif deficit < -1e-9:
-                # on a dépassé V suite au clamp -> réduction proportionnelle
-                x = x * (V / max(sum_x, 1e-12))
-        
-            x = np.where(x < 1e-9, 0.0, x)
-            df_calc.loc[grp.index, "X_adj (hL)"] = x
 
-        cap_resume = f"{volume_cible:.2f} hL par goût"
+        for g, Xg_target in zip(gout_index, Xg):
+            grp = df_calc[df_calc["GoutCanon"] == g]
+            idx = grp.index
+
+            # poids internes : prorata des ventes dans le goût (sinon égalitaire)
+            if repartir_pro_rv:
+                s = float(grp["Volume vendu (hl)"].sum())
+                if s > 1e-12:
+                    w_in = grp["Volume vendu (hl)"] / s
+                else:
+                    w_in = pd.Series(1.0 / len(grp), index=idx)
+            else:
+                w_in = pd.Series(1.0 / len(grp), index=idx)
+
+            # répartition simple au prorata interne (ok car on a déjà égalisé entre goûts)
+            x = w_in.to_numpy(float) * float(Xg_target)
+
+            # assure non-négatif
+            x = np.maximum(x, 0.0)
+
+            # petit ajustement pour coller exactement la cible sur ce goût
+            diff = float(Xg_target) - float(x.sum())
+            if abs(diff) > 1e-9 and len(x) > 0:
+                x[0] += diff  # correction minuscule
+
+            df_calc.loc[idx, "X_adj (hL)"] = x
+
+        cap_resume = f"{volume_cible:.2f} hL au total (autonomie égale entre {len(per_g)} goûts)"
+
     else:
         # --------- PARTAGE DE LA CIBLE ENTRE LES GOÛTS (phase 1) ----------
         V = float(volume_cible)
