@@ -456,9 +456,9 @@ forecast_fmt, forecast_ff = aggregate_forecast_by_format(
 )
 
 # KPIs — on affiche des ÉTIQUETTES (≈ nb de bouteilles) plutôt que “bouteilles”
-b_33 = forecast.get("12x33", {}).get("bottles", 0.0)
-b_75 = forecast.get("6x75", {}).get("bottles", 0.0) + forecast.get("4x75", {}).get("bottles", 0.0)
-cartons_total = sum(v.get("cartons", 0.0) for v in forecast.values())
+b_33 = forecast_fmt.get("12x33", {}).get("bottles", 0.0)
+b_75 = forecast_fmt.get("6x75", {}).get("bottles", 0.0) + forecast_fmt.get("4x75", {}).get("bottles", 0.0)
+cartons_total = sum(v.get("cartons", 0.0) for v in forecast_fmt.values())
 
 colA, colB, colC = st.columns([1.1, 1, 1])
 with colA:
