@@ -119,80 +119,113 @@ def _parse_number(x: str | float | int) -> float:
 @st.cache_data(show_spinner=False)
 def read_consumption_xlsx(file) -> pd.DataFrame:
     """
-    Extrait la zone comprise entre la ligne contenant 'conditionnement'
-    (exclusive) et **2 lignes avant** la ligne qui contient 'contenants'.
-    - On lit **toutes** les colonnes de cette zone, puis on auto-détecte :
-        * la colonne 'article' = celle qui a le plus de libellés non numériques,
-        * la colonne 'conso'   = la colonne la plus numérique (à droite si égalité).
-    - On supprime les lignes de TOTAL et les vides.
+    Extrait la zone :
+      - colonne ARTICLE = la colonne où se trouve le mot 'conditionnement'
+      - colonne CONSO   = la colonne immédiatement à droite de 'conditionnement'
+    Lignes : à partir de la ligne sous 'conditionnement' et jusqu'à **2 lignes avant**
+    la ligne qui contient 'contenants'. Ignore les lignes 'TOTAL'.
     Retourne colonnes: key, article, conso, per_hint.
     """
     df0 = pd.read_excel(file, header=None, dtype=str)
 
-    r_cond, _ = _find_cell(df0, "conditionnement")
-    r_stop, _ = _find_cell(df0, "contenants")
-    if r_cond is None:
-        raise RuntimeError("Mot-clé 'conditionnement' introuvable dans le fichier consommation.")
+    # -- utilitaires locaux
+    def _norm_txt_local(s: str) -> str:
+        s = str(s or "").strip().lower()
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        s = re.sub(r"\s+", " ", s)
+        return s
 
+    # Trouver la cellule 'conditionnement' (on prend la meilleure ancre = celle qui a
+    # le plus de lignes non vides en dessous dans la même colonne).
+    anchors = []
+    for r in range(df0.shape[0]):
+        for c in range(df0.shape[1]):
+            if "conditionnement" in _norm_txt_local(df0.iat[r, c]):
+                # compte de lignes non vides sous l'ancre
+                k = 0
+                rr = r + 1
+                while rr < df0.shape[0] and str(df0.iat[rr, c]).strip():
+                    k += 1
+                    rr += 1
+                anchors.append((k, r, c))
+    if not anchors:
+        raise RuntimeError("Mot-clé 'conditionnement' introuvable dans le fichier consommation.")
+    _, r_cond, c_cond = max(anchors)  # meilleure ancre
+
+    # Limite basse : 2 lignes avant la 1re occurrence de 'contenants' située APRÈS l'ancre
+    r_stop = None
+    for r in range(r_cond + 1, df0.shape[0]):
+        row_txt = " ".join(str(x) for x in df0.iloc[r].tolist())
+        if "contenants" in _norm_txt_local(row_txt):
+            r_stop = r
+            break
     if r_stop is None:
         r_stop = df0.shape[0]
 
     row_start = r_cond + 1
-    row_end = max(row_start, r_stop - 2)  # 2 lignes avant 'contenants'
-    zone = df0.iloc[row_start:row_end, :].copy()
+    row_end   = max(row_start, r_stop - 2)  # 2 lignes avant 'contenants'
 
-    # heuristique colonnes : score "texte" vs "numérique"
-    def text_score(col: pd.Series) -> int:
-        cnt = 0
-        for v in col.astype(str):
-            s = str(v or "").strip()
-            if not s:
-                continue
-            # non numérique → +1
-            if pd.isna(_parse_number(s)):
-                cnt += 1
-        return cnt
+    # Colonnes fixes par exigence : Article = colonne ancre ; Conso = colonne à droite
+    col_article = c_cond
+    col_val_prefered = c_cond + 1
 
-    def num_score(col: pd.Series) -> int:
-        cnt = 0
-        for v in col.astype(str):
-            if not pd.isna(_parse_number(v)):
-                cnt += 1
-        return cnt
+    # Si la colonne préférée ne contient aucun numérique, on cherche la 1re colonne
+    # à droite contenant des numériques (séparateur , ou . géré).
+    def _count_numeric(col_idx: int) -> int:
+        vals = df0.iloc[row_start:row_end, col_idx].astype(str)
+        vals = vals.str.replace(",", ".", regex=False)
+        x = pd.to_numeric(vals, errors="coerce")
+        return int(x.notna().sum())
 
-    scores_text = {j: text_score(zone.iloc[:, j]) for j in range(zone.shape[1])}
-    # article = max texte ; conso = max numérique (à droite de l'article si possible)
-    col_article = max(scores_text, key=scores_text.get)
-    candidates = [j for j in range(zone.shape[1]) if j != col_article]
-    if not candidates:
-        raise RuntimeError("Impossible de détecter la colonne consommation dans la zone.")
-    scores_num = {j: num_score(zone.iloc[:, j]) for j in candidates}
-    # en cas d'égalité, on prend la colonne la plus à droite
-    best_num = max(scores_num.values())
-    col_conso = max([j for j, s in scores_num.items() if s == best_num])
+    col_val = col_val_prefered
+    if col_val >= df0.shape[1] or _count_numeric(col_val) == 0:
+        best = None
+        for cc in range(col_val_prefered, df0.shape[1]):
+            cnt = _count_numeric(cc)
+            if cnt > 0:
+                best = (cnt, cc) if best is None or cnt > best[0] else best
+        if best is None:
+            raise RuntimeError(
+                "Impossible de trouver une colonne de **consommation** numérique à droite de 'conditionnement'."
+            )
+        col_val = best[1]
 
-    block = zone.iloc[:, [col_article, col_conso]].copy()
+    # Extraction du bloc
+    block = df0.iloc[row_start:row_end, [col_article, col_val]].copy()
     block.columns = ["article", "conso_raw"]
-
-    # Nettoyage
     block["article"] = block["article"].astype(str).str.strip()
-    block = block[block["article"].str.len() > 0]
-    block = block[~block["article"].map(_is_total_row)]
 
-    block["conso"] = pd.to_numeric(block["conso_raw"].map(_parse_number), errors="coerce").fillna(0.0)
+    # Nettoie / ignore les totaux
+    def _is_total_row_local(s: str) -> bool:
+        t = _norm_txt_local(s)
+        return bool(t) and (t.startswith("total") or t in {
+            "total general", "grand total", "totaux", "total stock",
+            "total stocks", "total consommation", "total consommations",
+            "total achats", "total des achats"
+        })
 
-    # Heuristique unité (par boîte si mots-clés… sinon par bouteille)
+    block = block[block["article"].map(lambda s: not _is_total_row_local(s))]
+
+    # Numérise la conso (gestion des virgules)
+    block["conso"] = pd.to_numeric(
+        block["conso_raw"].astype(str).str.replace(",", ".", regex=False),
+        errors="coerce"
+    ).fillna(0.0)
+
+    # Heuristique unité (par carton si mots-clés ; sinon par bouteille)
     def _per_hint(a: str) -> str:
-        a0 = _norm_txt(a)
-        if any(w in a0 for w in ["carton", "caisse", "colis", "etui", "étui"]):
-            return "carton"
-        return "bottle"
+        a0 = _norm_txt_local(a)
+        return "carton" if any(w in a0 for w in ["carton", "caisse", "colis", "etui", "étui"]) else "bottle"
 
     block["per_hint"] = block["article"].map(_per_hint)
-    block["key"] = block["article"].map(_norm_txt)
+    block["key"] = block["article"].map(_norm_txt_local)
+
+    # Agrégat au cas où des lignes dupliquées existent
     block = block.groupby(["key", "article", "per_hint"], as_index=False)["conso"].sum()
 
     return block[["key", "article", "conso", "per_hint"]]
+
 
 @st.cache_data(show_spinner=False)
 def read_stock_xlsx(file) -> pd.DataFrame:
