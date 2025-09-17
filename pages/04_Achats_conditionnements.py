@@ -21,7 +21,7 @@ if "df_raw" not in st.session_state or "window_days" not in st.session_state:
 df_raw = st.session_state.df_raw.copy()
 window_days = float(st.session_state.window_days)
 
-# ---------------- Sidebar ----------------
+# ---------------- Sidebar (période + options) ----------------
 with st.sidebar:
     st.header("Période à prévoir")
     horizon_j = st.number_input("Horizon (jours)", min_value=1, max_value=365, value=14, step=1)
@@ -31,16 +31,31 @@ with st.sidebar:
     st.header("Options étiquettes")
     force_labels = st.checkbox("Étiquettes = 1 par bouteille (forcer si 'étiquette' dans le nom)", value=True)
 
-    st.markdown("---")
-    st.header("Fichiers à importer")
-    conso_file = st.file_uploader("Consommation des articles (Excel)", type=["xlsx","xls"])
-    stock_file = st.file_uploader("Stocks des articles (Excel)", type=["xlsx","xls"])
-
 st.caption(
     f"Excel ventes courant : **{st.session_state.get('file_name','(sans nom)')}** — "
     f"Fenêtre de calcul des vitesses : **{int(window_days)} jours** — "
     f"Horizon prévision : **{int(horizon_j)} jours**"
 )
+
+# ====================== IMPORTS (dans la page) ======================
+section("Importer les fichiers", "📥")
+c1, c2 = st.columns(2)
+with c1:
+    st.subheader("Consommation des articles (Excel)")
+    conso_file = st.file_uploader(
+        "Déposer le fichier *Consommation* ici",
+        type=["xlsx","xls"],
+        key="uploader_conso",
+        label_visibility="collapsed"
+    )
+with c2:
+    st.subheader("Stocks des articles (Excel)")
+    stock_file = st.file_uploader(
+        "Déposer le fichier *Stocks* ici",
+        type=["xlsx","xls"],
+        key="uploader_stock",
+        label_visibility="collapsed"
+    )
 
 # ====================== Helpers ======================
 
@@ -242,7 +257,8 @@ with colB:
 with colC:
     kpi("Cartons prévus (tous formats)", f"{cartons_total:.0f}")
 
-# Chargement des 2 fichiers
+# ====================== Lecture fichiers + résultat ======================
+
 df_conso = None
 df_stockc = None
 err_block = False
@@ -256,7 +272,7 @@ if conso_file is not None:
         st.error(f"Erreur lecture consommation: {e}")
         err_block = True
 else:
-    st.info("Importer l’Excel **Consommation des articles** (onglet latéral).")
+    st.info("Importer l’Excel **Consommation des articles** (bloc ci-dessus).")
 
 if stock_file is not None:
     try:
@@ -267,11 +283,10 @@ if stock_file is not None:
         st.error(f"Erreur lecture stocks: {e}")
         err_block = True
 else:
-    st.info("Importer l’Excel **Stocks des articles** (onglet latéral).")
+    st.info("Importer l’Excel **Stocks des articles** (bloc ci-dessus).")
 
 st.markdown("---")
 
-# ====================== Résultat ======================
 if (df_conso is not None) and (df_stockc is not None) and (not err_block):
     result = compute_needs_table(df_conso, df_stockc, forecast, force_labels=force_labels)
 
