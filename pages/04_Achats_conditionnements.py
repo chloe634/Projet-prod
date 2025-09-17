@@ -326,44 +326,56 @@ def _article_applies_formats(article: str) -> Tuple[List[str], str]:
         fmts = ["12x33", "6x75", "4x75"]
     return fmts, per
 
-def compute_needs_table(df_conso: pd.DataFrame, df_stock: pd.DataFrame, forecast_fmt: Dict[str, Dict[str, float]], *, force_labels: bool) -> pd.DataFrame:
+def compute_needs_table(
+    df_conso: pd.DataFrame,
+    df_stock: pd.DataFrame,
+    forecast_fmt: Dict[str, Dict[str, float]],
+    *,
+    force_labels: bool
+) -> pd.DataFrame:
     """
-    Besoin = conso × (bouteilles ou cartons prévus) agrégé par formats applicables.
-    Cas particulier ÉTIQUETTES:
-      - si 'étiquette' dans le nom ET option cochée → conso = 1 par bouteille (ignore le fichier de conso)
+    Besoin = coefficient d'article × (bouteilles OU cartons prévus sur l’horizon).
+    Normalisations:
+      - ÉTIQUETTES : 1 par bouteille (si option cochée)
+      - CAPSULES   : 1 par bouteille
+      - CARTONS (12x33 / 6x75 / 4x75) : 1 par carton
+      - Autres articles : on garde la valeur de la colonne B comme coefficient.
     """
-    rows = []
-for _, r in df_conso.iterrows():
-    art = r["article"]; k = r["key"]
-    # Valeur brute de la colonne B (souvent un total historique)
-    conso_file = float(r["conso"])
-    a_norm = _norm_txt(art)
+    rows: List[Dict] = []
 
-    # Formats + unité par défaut (heuristique)
-    fmts, per = _article_applies_formats(art)
+    if df_conso is None or df_conso.empty:
+        return pd.DataFrame(columns=["Article", "Unité", "Besoin horizon", "Stock dispo", "À acheter"])
 
-    # --- Normalisation des consommables standards ---
-    # 1) Étiquettes → 1 par bouteille (si l’option est cochée)
-    if force_labels and ("etiquette" in a_norm or "étiquette" in a_norm):
-        per = "bottle"
-        conso = 1.0
-    # 2) Capsules → 1 par bouteille
-    elif "capsule" in a_norm:
-        per = "bottle"
-        conso = 1.0
-    # 3) Cartons de transport (12x33 / 6x75 / 4x75) → 1 par carton
-    elif "carton" in a_norm and ("33" in a_norm or "75" in a_norm):
-        per = "carton"
-        conso = 1.0
-    else:
-        # Articles non reconnus : on utilise la valeur de la colonne B comme coefficient
-        conso = conso_file
+    for _, r in df_conso.iterrows():
+        art = str(r.get("article", "")).strip()
+        if not art or _is_total_row(art):
+            continue
 
-    # Si le fichier donne un indice explicite, on le respecte
-    hint = str(r.get("per_hint","")).strip()
-    if hint in ("bottle","carton"):
-        per = hint
+        k = r.get("key", _norm_txt(art))
+        conso_file = pd.to_numeric(r.get("conso", 0), errors="coerce")
+        conso_file = float(0 if pd.isna(conso_file) else conso_file)
 
+        a_norm = _norm_txt(art)
+        fmts, per = _article_applies_formats(art)
+
+        # --- normalisation des consommables standards ---
+        if force_labels and ("etiquette" in a_norm or "étiquette" in a_norm):
+            per = "bottle"
+            conso = 1.0
+        elif "capsule" in a_norm:
+            per = "bottle"
+            conso = 1.0
+        elif ("carton" in a_norm or "caisse" in a_norm or "colis" in a_norm or "etui" in a_norm or "étui" in a_norm) and (
+            "12x33" in a_norm or "6x75" in a_norm or "4x75" in a_norm or (("33" in a_norm) and ("75" not in a_norm)) or ("75" in a_norm)
+        ):
+            per = "carton"
+            conso = 1.0
+        else:
+            conso = conso_file
+
+        hint = str(r.get("per_hint", "")).strip().lower()
+        if hint in ("bottle", "carton"):
+            per = hint
 
         qty = 0.0
         for f in fmts:
@@ -371,14 +383,13 @@ for _, r in df_conso.iterrows():
                 qty += conso * float(forecast_fmt.get(f, {}).get("bottles", 0.0))
             else:
                 qty += conso * float(forecast_fmt.get(f, {}).get("cartons", 0.0))
-        rows.append(
-            {
-                "key": k,
-                "Article": art,
-                "Unité": "par bouteille" if per == "bottle" else "par carton",
-                "Besoin horizon": qty,
-            }
-        )
+
+        rows.append({
+            "key": k,
+            "Article": art,
+            "Unité": "par bouteille" if per == "bottle" else "par carton",
+            "Besoin horizon": qty
+        })
 
     need_df = pd.DataFrame(rows)
     if need_df.empty:
@@ -386,22 +397,21 @@ for _, r in df_conso.iterrows():
 
     st_df = (
         df_stock[["key", "stock"]].rename(columns={"stock": "Stock dispo"})
-        if df_stock is not None
-        else pd.DataFrame(columns=["key", "Stock dispo"])
+        if df_stock is not None else
+        pd.DataFrame(columns=["key", "Stock dispo"])
     )
-    out = need_df.merge(st_df, on="key", how="left").fillna({"Stock dispo": 0.0})
+    out = need_df.merge(st_df, on="key", how="left")
+    out["Stock dispo"] = pd.to_numeric(out["Stock dispo"], errors="coerce").fillna(0.0)
 
-    # À acheter = max(Besoin - Stock, 0) puis arrondi à l'entier
     out["À acheter"] = np.maximum(out["Besoin horizon"] - out["Stock dispo"], 0.0)
 
-    # Arrondir proprement (entiers)
     for c in ["Besoin horizon", "Stock dispo", "À acheter"]:
         out[c] = np.round(out[c], 0).astype(int)
 
     return (
         out.drop(columns=["key"])
-        .sort_values("À acheter", ascending=False)
-        .reset_index(drop=True)
+           .sort_values("À acheter", ascending=False)
+           .reset_index(drop=True)
     )
 
 # ====================== Calculs ======================
