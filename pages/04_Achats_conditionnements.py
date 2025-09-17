@@ -277,31 +277,59 @@ def _fmt_from_stock_text(stock_txt: str) -> str | None:
         return "4x75"
     return None
 
-def aggregate_forecast_by_format(df_sales: pd.DataFrame, window_days: float, horizon_j: int) -> Dict[str, Dict[str, float]]:
-    """Calcule bouteilles et cartons prévus par format sur l’horizon (à partir des vitesses)."""
-    req = ["Stock", "Volume vendu (hl)"]
+def aggregate_forecast_by_format(
+    df_sales: pd.DataFrame, window_days: float, horizon_j: int
+) -> tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, Dict[str, float]]]]:
+    """
+    Retourne un double résultat:
+      - fmt_totals[fmt] = {"bottles": ..., "cartons": ...}   (agrégé TOUS goûts)
+      - by_flavor[gout][fmt] = {"bottles": ..., "cartons": ...}  (par goût ET format)
+    """
+    req = ["Stock", "Volume vendu (hl)", "GoutCanon"]
     if any(c not in df_sales.columns for c in req):
-        return {}
+        return {}, {}
 
     tmp = df_sales.copy()
     tmp["fmt"] = tmp["Stock"].map(_fmt_from_stock_text)
     tmp = tmp.dropna(subset=["fmt"])
     parsed = tmp["Stock"].map(parse_stock)
     tmp[["nb_btl_cart", "vol_L"]] = pd.DataFrame(parsed.tolist(), index=tmp.index)
+
     tmp["vol_hL_per_btl"] = (tmp["vol_L"].astype(float) / 100.0)
     tmp["nb_btl_cart"] = pd.to_numeric(tmp["nb_btl_cart"], errors="coerce")
     tmp["v_hL_j"] = pd.to_numeric(tmp["Volume vendu (hl)"], errors="coerce") / max(float(window_days), 1.0)
-    tmp = tmp.replace([np.inf, -np.inf], np.nan).dropna(subset=["vol_hL_per_btl", "nb_btl_cart", "v_hL_j"])
+
+    tmp["gout"] = tmp["GoutCanon"].astype(str).str.strip()
+    tmp = tmp.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["vol_hL_per_btl", "nb_btl_cart", "v_hL_j"]
+    )
+
     tmp["btl_j"] = np.where(tmp["vol_hL_per_btl"] > 0, tmp["v_hL_j"] / tmp["vol_hL_per_btl"], 0.0)
     tmp["carton_j"] = np.where(tmp["nb_btl_cart"] > 0, tmp["btl_j"] / tmp["nb_btl_cart"], 0.0)
     tmp["btl_h"] = horizon_j * tmp["btl_j"]
     tmp["carton_h"] = horizon_j * tmp["carton_j"]
 
-    agg = tmp.groupby("fmt").agg(bottles=("btl_h", "sum"), cartons=("carton_h", "sum"))
-    out = {fmt: {"bottles": float(agg.loc[fmt, "bottles"]), "cartons": float(agg.loc[fmt, "cartons"])} for fmt in agg.index}
+    # Totaux par format (tous goûts confondus)
+    agg_fmt = tmp.groupby("fmt").agg(bottles=("btl_h", "sum"), cartons=("carton_h", "sum"))
+    fmt_totals = {fmt: {"bottles": float(agg_fmt.loc[fmt, "bottles"]),
+                        "cartons": float(agg_fmt.loc[fmt, "cartons"])} for fmt in agg_fmt.index}
     for k in ["12x33", "6x75", "4x75"]:
-        out.setdefault(k, {"bottles": 0.0, "cartons": 0.0})
-    return out
+        fmt_totals.setdefault(k, {"bottles": 0.0, "cartons": 0.0})
+
+    # Par goût + format
+    agg_ff = tmp.groupby(["gout", "fmt"]).agg(bottles=("btl_h", "sum"), cartons=("carton_h", "sum"))
+    by_flavor: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for (g, f), row in agg_ff.iterrows():
+        by_flavor.setdefault(g, {})[f] = {"bottles": float(row["bottles"]),
+                                          "cartons": float(row["cartons"])}
+
+    # S'assurer que tous les formats existent pour chaque goût
+    for g in by_flavor:
+        for f in ["12x33", "6x75", "4x75"]:
+            by_flavor[g].setdefault(f, {"bottles": 0.0, "cartons": 0.0})
+
+    return fmt_totals, by_flavor
+
 
 def _article_applies_formats(article: str) -> Tuple[List[str], str]:
     """
@@ -326,63 +354,76 @@ def _article_applies_formats(article: str) -> Tuple[List[str], str]:
         fmts = ["12x33", "6x75", "4x75"]
     return fmts, per
 
+def _match_flavors_in_article(article: str, known_flavors: List[str]) -> List[str]:
+    """
+    Retourne les goûts dont le nom normalisé apparaît dans le libellé de l'article.
+    Exemple: "Etiquette KEFIR Mangue-Passion 75" → ["Mangue Passion"]
+    """
+    a = _norm_txt(article)
+    found: List[str] = []
+    for g in known_flavors:
+        gn = _norm_txt(g)
+        if gn and gn in a:
+            found.append(g)
+    # s'il y a plusieurs matches, on garde les plus spécifiques (chaînes les plus longues)
+    found.sort(key=lambda s: len(_norm_txt(s)), reverse=True)
+    return found
+
 def compute_needs_table(
     df_conso: pd.DataFrame,
     df_stock: pd.DataFrame,
     forecast_fmt: Dict[str, Dict[str, float]],
+    forecast_ff: Dict[str, Dict[str, Dict[str, float]]],
     *,
     force_labels: bool
 ) -> pd.DataFrame:
     """
-    Besoin = coefficient d'article × (bouteilles OU cartons prévus sur l’horizon).
-    Normalisations:
-      - ÉTIQUETTES : 1 par bouteille (si option cochée)
-      - CAPSULES   : 1 par bouteille
-      - CARTONS (12x33 / 6x75 / 4x75) : 1 par carton
-      - Autres articles : on garde la valeur de la colonne B comme coefficient.
+    Si l'article cible un goût (étiquette par ex.), on utilise la demande (goût,format).
+    Sinon (articles génériques comme capsules/cartons), on utilise le total par format.
     """
-    rows: List[Dict] = []
-
-    if df_conso is None or df_conso.empty:
-        return pd.DataFrame(columns=["Article", "Unité", "Besoin horizon", "Stock dispo", "À acheter"])
+    rows = []
+    known_flavors = list(forecast_ff.keys())
 
     for _, r in df_conso.iterrows():
-        art = str(r.get("article", "")).strip()
-        if not art or _is_total_row(art):
-            continue
-
-        k = r.get("key", _norm_txt(art))
-        conso_file = pd.to_numeric(r.get("conso", 0), errors="coerce")
-        conso_file = float(0 if pd.isna(conso_file) else conso_file)
-
+        art = r["article"]; k = r["key"]
+        conso_file = float(r["conso"])
         a_norm = _norm_txt(art)
+
         fmts, per = _article_applies_formats(art)
 
-        # --- normalisation des consommables standards ---
+        # Normalisation pour les consommables "classiques"
         if force_labels and ("etiquette" in a_norm or "étiquette" in a_norm):
-            per = "bottle"
-            conso = 1.0
+            per = "bottle";  conso = 1.0
         elif "capsule" in a_norm:
-            per = "bottle"
-            conso = 1.0
-        elif ("carton" in a_norm or "caisse" in a_norm or "colis" in a_norm or "etui" in a_norm or "étui" in a_norm) and (
-            "12x33" in a_norm or "6x75" in a_norm or "4x75" in a_norm or (("33" in a_norm) and ("75" not in a_norm)) or ("75" in a_norm)
-        ):
-            per = "carton"
-            conso = 1.0
+            per = "bottle";  conso = 1.0
+        elif "carton" in a_norm and ("33" in a_norm or "75" in a_norm):
+            per = "carton";  conso = 1.0
         else:
             conso = conso_file
 
-        hint = str(r.get("per_hint", "")).strip().lower()
-        if hint in ("bottle", "carton"):
+        hint = str(r.get("per_hint","")).strip()
+        if hint in ("bottle","carton"):
             per = hint
 
+        # Goûts détectés dans le libellé
+        targets = _match_flavors_in_article(art, known_flavors)
+
         qty = 0.0
-        for f in fmts:
-            if per == "bottle":
-                qty += conso * float(forecast_fmt.get(f, {}).get("bottles", 0.0))
-            else:
-                qty += conso * float(forecast_fmt.get(f, {}).get("cartons", 0.0))
+        if targets:
+            # Article spécifique à un (ou plusieurs) goûts → somme sur ces goûts
+            for g in targets:
+                for f in fmts:
+                    if per == "bottle":
+                        qty += conso * float(forecast_ff.get(g, {}).get(f, {}).get("bottles", 0.0))
+                    else:
+                        qty += conso * float(forecast_ff.get(g, {}).get(f, {}).get("cartons", 0.0))
+        else:
+            # Article générique → totaux par format
+            for f in fmts:
+                if per == "bottle":
+                    qty += conso * float(forecast_fmt.get(f, {}).get("bottles", 0.0))
+                else:
+                    qty += conso * float(forecast_fmt.get(f, {}).get("cartons", 0.0))
 
         rows.append({
             "key": k,
@@ -393,31 +434,26 @@ def compute_needs_table(
 
     need_df = pd.DataFrame(rows)
     if need_df.empty:
-        return pd.DataFrame(columns=["Article", "Unité", "Besoin horizon", "Stock dispo", "À acheter"])
+        return pd.DataFrame(columns=["Article","Unité","Besoin horizon","Stock dispo","À acheter"])
 
-    st_df = (
-        df_stock[["key", "stock"]].rename(columns={"stock": "Stock dispo"})
-        if df_stock is not None else
-        pd.DataFrame(columns=["key", "Stock dispo"])
-    )
-    out = need_df.merge(st_df, on="key", how="left")
-    out["Stock dispo"] = pd.to_numeric(out["Stock dispo"], errors="coerce").fillna(0.0)
+    st_df = (df_stock[["key","stock"]].rename(columns={"stock":"Stock dispo"})
+             if df_stock is not None else pd.DataFrame(columns=["key","Stock dispo"]))
+    out = need_df.merge(st_df, on="key", how="left").fillna({"Stock dispo": 0.0})
 
     out["À acheter"] = np.maximum(out["Besoin horizon"] - out["Stock dispo"], 0.0)
 
-    for c in ["Besoin horizon", "Stock dispo", "À acheter"]:
+    for c in ["Besoin horizon","Stock dispo","À acheter"]:
         out[c] = np.round(out[c], 0).astype(int)
 
-    return (
-        out.drop(columns=["key"])
-           .sort_values("À acheter", ascending=False)
-           .reset_index(drop=True)
-    )
+    return out.drop(columns=["key"]).sort_values("À acheter", ascending=False).reset_index(drop=True)
+
 
 # ====================== Calculs ======================
 
 # Prévision par format depuis les ventes historiques
-forecast = aggregate_forecast_by_format(df_raw, window_days=window_days, horizon_j=int(horizon_j))
+forecast_fmt, forecast_ff = aggregate_forecast_by_format(
+    df_raw, window_days=window_days, horizon_j=int(horizon_j)
+)
 
 # KPIs — on affiche des ÉTIQUETTES (≈ nb de bouteilles) plutôt que “bouteilles”
 b_33 = forecast.get("12x33", {}).get("bottles", 0.0)
@@ -465,7 +501,9 @@ else:
 st.markdown("---")
 
 if (df_conso is not None) and (df_stockc is not None) and (not err_block):
-    result = compute_needs_table(df_conso, df_stockc, forecast, force_labels=force_labels)
+    result = compute_needs_table(
+    df_conso, df_stockc, forecast_fmt, forecast_ff, force_labels=force_labels
+)
 
     if result.empty:
         st.info("Aucun besoin calculé (vérifie les fichiers de consommation/stocks et les correspondances d’articles).")
