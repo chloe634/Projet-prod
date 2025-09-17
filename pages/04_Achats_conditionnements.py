@@ -364,17 +364,43 @@ def _article_applies_formats(article: str) -> Tuple[List[str], str]:
 
 def _match_flavors_in_article(article: str, known_flavors: List[str]) -> List[str]:
     """
-    Retourne les goûts dont le nom normalisé apparaît dans le libellé de l'article.
-    Exemple: "Etiquette KEFIR Mangue-Passion 75" → ["Mangue Passion"]
+    Retourne les goûts dont le nom apparaît dans le libellé de l'article,
+    avec une normalisation *très* permissive (accents, tirets, ponctuation).
+    Exemple: "Etiquette KEFIR Mangue-Passion 33" → ["Mangue Passion"]
     """
-    a = _norm_txt(article)
+    a = _canon_txt(article)  # << remplace _norm_txt: on enlève accents + ponctuation
     found: List[str] = []
+
+    # Petites équivalences éventuelles (si tu veux en ajouter)
+    aliases = {
+        "menthe citron vert": ["menthe citron vert", "menthe citron-vert", "menthe-citron vert", "menthe-citron-vert"],
+        "mangue passion": ["mangue passion", "mangue-passion"],
+        # "zest d agrumes": ["zest d agrumes", "zeste d agrumes", "zest agrumes"],
+    }
+
     for g in known_flavors:
-        gn = _norm_txt(g)
-        if gn and gn in a:
+        g_norm = _canon_txt(g)
+        # teste nom direct
+        if g_norm and g_norm in a:
             found.append(g)
-    found.sort(key=lambda s: len(_norm_txt(s)), reverse=True)
-    return found
+            continue
+        # teste alias éventuels
+        for k, vs in aliases.items():
+            if g_norm == _canon_txt(k):
+                if any(_canon_txt(v) in a for v in vs):
+                    found.append(g)
+                    break
+
+    # Plusieurs matches ? On garde les plus spécifiques (chaînes les plus longues)
+    found.sort(key=lambda s: len(_canon_txt(s)), reverse=True)
+    # Évite les doublons
+    out = []
+    seen = set()
+    for g in found:
+        if g not in seen:
+            out.append(g); seen.add(g)
+    return out
+
 
 def compute_needs_table(
     df_conso: pd.DataFrame,
