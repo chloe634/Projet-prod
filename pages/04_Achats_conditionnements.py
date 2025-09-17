@@ -333,21 +333,37 @@ def compute_needs_table(df_conso: pd.DataFrame, df_stock: pd.DataFrame, forecast
       - si 'étiquette' dans le nom ET option cochée → conso = 1 par bouteille (ignore le fichier de conso)
     """
     rows = []
-    for _, r in df_conso.iterrows():
-        art = r["article"]
-        k = r["key"]
-        conso = float(r["conso"])
-        a_norm = _norm_txt(art)
-        fmts, per = _article_applies_formats(art)
+for _, r in df_conso.iterrows():
+    art = r["article"]; k = r["key"]
+    # Valeur brute de la colonne B (souvent un total historique)
+    conso_file = float(r["conso"])
+    a_norm = _norm_txt(art)
 
-        # Règle spéciale étiquettes
-        if force_labels and ("etiquette" in a_norm or "étiquette" in a_norm or "etiquettes" in a_norm or "étiquettes" in a_norm):
-            per = "bottle"
-            conso = 1.0  # 1 étiquette par bouteille
+    # Formats + unité par défaut (heuristique)
+    fmts, per = _article_applies_formats(art)
 
-        # sinon on respecte le per_hint si présent
-        if str(r.get("per_hint", "")).strip() in ("bottle", "carton"):
-            per = str(r["per_hint"]).strip()
+    # --- Normalisation des consommables standards ---
+    # 1) Étiquettes → 1 par bouteille (si l’option est cochée)
+    if force_labels and ("etiquette" in a_norm or "étiquette" in a_norm):
+        per = "bottle"
+        conso = 1.0
+    # 2) Capsules → 1 par bouteille
+    elif "capsule" in a_norm:
+        per = "bottle"
+        conso = 1.0
+    # 3) Cartons de transport (12x33 / 6x75 / 4x75) → 1 par carton
+    elif "carton" in a_norm and ("33" in a_norm or "75" in a_norm):
+        per = "carton"
+        conso = 1.0
+    else:
+        # Articles non reconnus : on utilise la valeur de la colonne B comme coefficient
+        conso = conso_file
+
+    # Si le fichier donne un indice explicite, on le respecte
+    hint = str(r.get("per_hint","")).strip()
+    if hint in ("bottle","carton"):
+        per = hint
+
 
         qty = 0.0
         for f in fmts:
