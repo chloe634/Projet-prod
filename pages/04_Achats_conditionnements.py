@@ -1,10 +1,7 @@
 # pages/04_Achats_conditionnements.py
 from __future__ import annotations
-import io
-import re
-import unicodedata
+import re, unicodedata
 from typing import Tuple, List, Dict
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -12,7 +9,7 @@ import streamlit as st
 from common.design import apply_theme, section, kpi
 from core.optimizer import parse_stock, VOL_TOL  # formats 12x33 / 6x75 / 4x75
 
-# ====================== THEME & CONTEXTE ======================
+# ====================== UI ======================
 apply_theme("Achats — Conditionnements", "📦")
 section("Prévision d’achats (conditionnements)", "📦")
 
@@ -24,7 +21,7 @@ if "df_raw" not in st.session_state or "window_days" not in st.session_state:
 df_raw = st.session_state.df_raw.copy()
 window_days = float(st.session_state.window_days)
 
-# ====================== OPTIONS (sidebar) ======================
+# ---------------- Sidebar (période + options) ----------------
 with st.sidebar:
     st.header("Période à prévoir")
     horizon_j = st.number_input("Horizon (jours)", min_value=1, max_value=365, value=14, step=1)
@@ -39,7 +36,7 @@ st.caption(
     f"Horizon prévision : **{int(horizon_j)} jours**"
 )
 
-# ====================== IMPORTS FICHIERS (dans la page) ======================
+# ====================== IMPORTS (dans la page) ======================
 section("Importer les fichiers", "📥")
 c1, c2 = st.columns(2)
 with c1:
@@ -59,9 +56,16 @@ with c2:
         label_visibility="collapsed"
     )
 
-# ====================== HELPERS TEXTE ======================
+# ====================== Helpers ======================
+
+def _norm_txt(s: str) -> str:
+    s = str(s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"\s+", " ", s)
+    return s
+
 def _canon_txt(s: str) -> str:
-    """Minuscule, sans accents, espaces→1, supprime ponctuation superflue."""
     s = str(s or "")
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
@@ -69,7 +73,7 @@ def _canon_txt(s: str) -> str:
     return s
 
 def _is_total_row(s: str) -> bool:
-    """Détecte 'TOTAL', 'Total général', etc. (robuste aux accents/casse)."""
+    """True si libellé est une ligne de total (TOTAL, Total général, …)."""
     t = _canon_txt(s)
     if not t:
         return False
@@ -81,142 +85,167 @@ def _is_total_row(s: str) -> bool:
         "total achats", "total des achats"
     }
 
-# ====================== LECTURE FICHIERS ======================
-@st.cache_data(show_spinner=False)
-def read_consumption_xlsx(uploaded_consumption_file) -> pd.DataFrame:
-    """
-    Lit la **colonne B** depuis la ligne **juste après** la cellule contenant 'conditionnement'
-    jusqu’à **2 lignes avant** la cellule contenant 'contenants'.
-    Chaque cellule de la colonne B contient un libellé + un nombre (coeff. de conso).
-    Renvoie colonnes: key | article | conso | per_hint ('bottle'/'carton')
-    - Lignes TOTAL ignorées.
-    - Si 'étiquette' dans le nom: per_hint='bottle' et conso=1.0 (sera renforcé côté calcul si force_labels).
-    """
-    import openpyxl
+def _find_cell(df_nohdr: pd.DataFrame, pattern: str) -> Tuple[int | None, int | None]:
+    pat = _norm_txt(pattern)
+    for r in range(df_nohdr.shape[0]):
+        row = df_nohdr.iloc[r].astype(str).tolist()
+        for c, v in enumerate(row):
+            if pat in _norm_txt(v):
+                return r, c
+    return None, None
 
-    bio = io.BytesIO(uploaded_consumption_file.read())
-    wb = openpyxl.load_workbook(bio, data_only=True)
-    ws = wb[wb.sheetnames[0]]
-
-    start_row, end_row = None, None
-    for r in range(1, ws.max_row + 1):
-        for c in range(1, min(ws.max_column, 20) + 1):
-            v = ws.cell(row=r, column=c).value
-            if isinstance(v, str):
-                t = _canon_txt(v)
-                if start_row is None and "conditionnement" in t:
-                    start_row = r + 1  # lecture à partir de la ligne suivante, col B
-                if "contenants" in t:
-                    end_row = (r - 2) if start_row else None  # 2 lignes avant
-    if start_row is None or end_row is None or end_row < start_row:
-        return pd.DataFrame(columns=["key", "article", "conso", "per_hint"])
-
-    data = []
-    for r in range(start_row, end_row + 1):
-        raw = ws.cell(row=r, column=2).value  # colonne B
-        if raw is None:
-            continue
-        key = str(raw).strip()
-        if key == "" or _is_total_row(key):
-            continue
-
-        # Extrait le premier nombre comme coefficient (ex: "Capsules 26 - 1" -> 1)
-        s = str(key)
-        m = re.search(r"([0-9]+(?:[.,][0-9]+)?)", s)
-        if m:
-            conso = float(m.group(1).replace(",", "."))
-            article = (s[:m.start()] + s[m.end():]).strip(" -–—:;/\t")
+def _parse_number(x: str | float | int) -> float:
+    """Tolère , décimales et séparateurs d'espace/point pour milliers."""
+    if isinstance(x, (int, float)) and not pd.isna(x):
+        return float(x)
+    s = str(x or "").strip()
+    if not s:
+        return np.nan
+    s = s.replace("\u202f", " ").replace("\xa0", " ")
+    # si on a à la fois . et , on suppose , = décimal si dernier séparateur est ,
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
         else:
-            conso = 1.0
-            article = s
-
-        # Heuristique d'unité
-        per_hint = "bottle"
-        if re.search(r"\b(carton|caisse|colis|etui|étui|pack|boite|boîte)\b", article, flags=re.I):
-            per_hint = "carton"
-
-        # Cas étiquette: forcer "par bouteille" (+ conso=1.0 par défaut)
-        if re.search(r"etiquette|étiquette", article, flags=re.I):
-            per_hint = "bottle"
-            # on garde conso détecté; il pourra être forcé à 1.0 au calcul si option activée
-
-        data.append({
-            "key": _canon_txt(article),
-            "article": article.strip(),
-            "conso": float(conso),
-            "per_hint": per_hint,
-        })
-
-    block = pd.DataFrame(data)
-    if block.empty:
-        return block
-    # Agrège doublons + filtre TOTAL de sécurité
-    block = block[~block["article"].apply(_is_total_row)]
-    block = (block.groupby(["key", "article", "per_hint"], as_index=False)["conso"].sum())
-    return block.reset_index(drop=True)
-
-@st.cache_data(show_spinner=False)
-def read_stock_xlsx(uploaded_stocks_file) -> pd.DataFrame:
-    """
-    Lit l’Excel Stocks et récupère:
-      - 'article' (libellé)
-      - 'stock' depuis la colonne 'Quantité virtuelle' (ou colonne F si non trouvée)
-    Filtre les lignes TOTAL et agrège les doublons.
-    Renvoie: key | article | stock
-    """
-    # 1) tentative avec en-têtes nommés
+            s = s.replace(",", "")
+    else:
+        s = s.replace(" ", "")
+        s = s.replace(",", ".")
     try:
-        bio = io.BytesIO(uploaded_stocks_file.read())
-        df = pd.read_excel(bio, engine="openpyxl")
+        return float(s)
     except Exception:
-        bio = io.BytesIO(uploaded_stocks_file.read())
-        df = pd.read_excel(bio)
+        return np.nan
 
-    cols_lower = {str(c).strip().lower(): c for c in df.columns}
-    qty_col = None
-    for k, real in cols_lower.items():
-        if ("quantité virtuelle" in k) or ("quantite virtuelle" in k) or ("qte virtuelle" in k):
-            qty_col = real; break
+@st.cache_data(show_spinner=False)
+def read_consumption_xlsx(file) -> pd.DataFrame:
+    """
+    Extrait la zone comprise entre la ligne contenant 'conditionnement'
+    (exclusive) et **2 lignes avant** la ligne qui contient 'contenants'.
+    - On lit **toutes** les colonnes de cette zone, puis on auto-détecte :
+        * la colonne 'article' = celle qui a le plus de libellés non numériques,
+        * la colonne 'conso'   = la colonne la plus numérique (à droite si égalité).
+    - On supprime les lignes de TOTAL et les vides.
+    Retourne colonnes: key, article, conso, per_hint.
+    """
+    df0 = pd.read_excel(file, header=None, dtype=str)
 
-    # colonne article
-    name_col = None
-    for cand in ["article","libellé","libelle","désignation","designation","intitulé","intitule","nom"]:
-        if cand in cols_lower:
-            name_col = cols_lower[cand]; break
-    if name_col is None and len(df.columns):
-        name_col = df.columns[0]
+    r_cond, _ = _find_cell(df0, "conditionnement")
+    r_stop, _ = _find_cell(df0, "contenants")
+    if r_cond is None:
+        raise RuntimeError("Mot-clé 'conditionnement' introuvable dans le fichier consommation.")
 
-    if qty_col is None:
-        # 2) fallback: considère la 6e colonne (F) si disponible, sans en-tête fiable
-        df0 = df.copy()
-        if df0.shape[1] >= 6:
-            qty_col = df0.columns[5]
-        else:
-            # rien d'exploitable
-            return pd.DataFrame(columns=["key","article","stock"])
+    if r_stop is None:
+        r_stop = df0.shape[0]
 
-    out = df[[name_col, qty_col]].copy()
-    out.columns = ["article", "stock"]
-    out["article"] = out["article"].astype(str).str.strip()
-    out = out[~out["article"].apply(_is_total_row)]
-    out["stock"] = pd.to_numeric(out["stock"], errors="coerce").fillna(0.0)
-    out["key"] = out["article"].map(_canon_txt)
-    out = out.groupby(["key","article"], as_index=False)["stock"].sum()
-    return out.reset_index(drop=True)
+    row_start = r_cond + 1
+    row_end = max(row_start, r_stop - 2)  # 2 lignes avant 'contenants'
+    zone = df0.iloc[row_start:row_end, :].copy()
 
-# ====================== CALCULS VENTES → FORMATS ======================
+    # heuristique colonnes : score "texte" vs "numérique"
+    def text_score(col: pd.Series) -> int:
+        cnt = 0
+        for v in col.astype(str):
+            s = str(v or "").strip()
+            if not s:
+                continue
+            # non numérique → +1
+            if pd.isna(_parse_number(s)):
+                cnt += 1
+        return cnt
+
+    def num_score(col: pd.Series) -> int:
+        cnt = 0
+        for v in col.astype(str):
+            if not pd.isna(_parse_number(v)):
+                cnt += 1
+        return cnt
+
+    scores_text = {j: text_score(zone.iloc[:, j]) for j in range(zone.shape[1])}
+    # article = max texte ; conso = max numérique (à droite de l'article si possible)
+    col_article = max(scores_text, key=scores_text.get)
+    candidates = [j for j in range(zone.shape[1]) if j != col_article]
+    if not candidates:
+        raise RuntimeError("Impossible de détecter la colonne consommation dans la zone.")
+    scores_num = {j: num_score(zone.iloc[:, j]) for j in candidates}
+    # en cas d'égalité, on prend la colonne la plus à droite
+    best_num = max(scores_num.values())
+    col_conso = max([j for j, s in scores_num.items() if s == best_num])
+
+    block = zone.iloc[:, [col_article, col_conso]].copy()
+    block.columns = ["article", "conso_raw"]
+
+    # Nettoyage
+    block["article"] = block["article"].astype(str).str.strip()
+    block = block[block["article"].str.len() > 0]
+    block = block[~block["article"].map(_is_total_row)]
+
+    block["conso"] = pd.to_numeric(block["conso_raw"].map(_parse_number), errors="coerce").fillna(0.0)
+
+    # Heuristique unité (par boîte si mots-clés… sinon par bouteille)
+    def _per_hint(a: str) -> str:
+        a0 = _norm_txt(a)
+        if any(w in a0 for w in ["carton", "caisse", "colis", "etui", "étui"]):
+            return "carton"
+        return "bottle"
+
+    block["per_hint"] = block["article"].map(_per_hint)
+    block["key"] = block["article"].map(_norm_txt)
+    block = block.groupby(["key", "article", "per_hint"], as_index=False)["conso"].sum()
+
+    return block[["key", "article", "conso", "per_hint"]]
+
+@st.cache_data(show_spinner=False)
+def read_stock_xlsx(file) -> pd.DataFrame:
+    """Repère l'en-tête 'Quantité virtuelle' et lit les stocks (en filtrant les TOTAL)."""
+    df0 = pd.read_excel(file, header=None, dtype=str)
+    r_hdr, c_q = _find_cell(df0, "quantité virtuelle")
+    if r_hdr is None:
+        raise RuntimeError("En-tête 'Quantité virtuelle' introuvable dans l'Excel de stocks.")
+
+    # Essaye de trouver le libellé article sur la même ligne que l'en-tête
+    name_candidates = {"article", "designation", "désignation", "libelle", "libellé"}
+    c_name = None
+    for cc in range(df0.shape[1]):
+        if _norm_txt(str(df0.iloc[r_hdr, cc])) in name_candidates:
+            c_name = cc
+            break
+    if c_name is None:
+        # fallback : colonne à gauche de "Quantité virtuelle" si non vide
+        for cc in range(max(0, c_q - 1), -1, -1):
+            if str(df0.iloc[r_hdr, cc]).strip():
+                c_name = cc
+                break
+    if c_name is None:
+        c_name = 0
+
+    body = df0.iloc[r_hdr + 1 :, [c_name, c_q]].copy()
+    body.columns = ["article", "stock_raw"]
+    body["article"] = body["article"].astype(str).str.strip()
+    body = body[body["article"].str.len() > 0]
+    body = body[~body["article"].map(_is_total_row)]
+
+    body["stock"] = pd.to_numeric(body["stock_raw"].map(_parse_number), errors="coerce").fillna(0.0)
+    body["key"] = body["article"].map(_norm_txt)
+    body = body.groupby(["key", "article"], as_index=False)["stock"].sum()
+    return body[["key", "article", "stock"]]
+
 def _fmt_from_stock_text(stock_txt: str) -> str | None:
     """Retourne '12x33' / '6x75' / '4x75' depuis la colonne Stock."""
     nb, vol = parse_stock(stock_txt)
-    if pd.isna(nb) or pd.isna(vol): return None
-    nb = int(nb); vol = float(vol)
-    if nb == 12 and abs(vol - 0.33) <= VOL_TOL: return "12x33"
-    if nb == 6  and abs(vol - 0.75) <= VOL_TOL: return "6x75"
-    if nb == 4  and abs(vol - 0.75) <= VOL_TOL: return "4x75"
+    if pd.isna(nb) or pd.isna(vol):
+        return None
+    nb = int(nb)
+    vol = float(vol)
+    if nb == 12 and abs(vol - 0.33) <= VOL_TOL:
+        return "12x33"
+    if nb == 6 and abs(vol - 0.75) <= VOL_TOL:
+        return "6x75"
+    if nb == 4 and abs(vol - 0.75) <= VOL_TOL:
+        return "4x75"
     return None
 
 def aggregate_forecast_by_format(df_sales: pd.DataFrame, window_days: float, horizon_j: int) -> Dict[str, Dict[str, float]]:
-    """Calcule bouteilles et cartons *prévisionnels* par format sur l’horizon H à partir des vitesses moyennes."""
+    """Calcule bouteilles et cartons prévus par format sur l’horizon (à partir des vitesses)."""
     req = ["Stock", "Volume vendu (hl)"]
     if any(c not in df_sales.columns for c in req):
         return {}
@@ -224,75 +253,68 @@ def aggregate_forecast_by_format(df_sales: pd.DataFrame, window_days: float, hor
     tmp = df_sales.copy()
     tmp["fmt"] = tmp["Stock"].map(_fmt_from_stock_text)
     tmp = tmp.dropna(subset=["fmt"])
-
     parsed = tmp["Stock"].map(parse_stock)
     tmp[["nb_btl_cart", "vol_L"]] = pd.DataFrame(parsed.tolist(), index=tmp.index)
-    tmp["vol_hL_per_btl"] = (pd.to_numeric(tmp["vol_L"], errors="coerce") / 100.0)
+    tmp["vol_hL_per_btl"] = (tmp["vol_L"].astype(float) / 100.0)
     tmp["nb_btl_cart"] = pd.to_numeric(tmp["nb_btl_cart"], errors="coerce")
-
     tmp["v_hL_j"] = pd.to_numeric(tmp["Volume vendu (hl)"], errors="coerce") / max(float(window_days), 1.0)
     tmp = tmp.replace([np.inf, -np.inf], np.nan).dropna(subset=["vol_hL_per_btl", "nb_btl_cart", "v_hL_j"])
-
     tmp["btl_j"] = np.where(tmp["vol_hL_per_btl"] > 0, tmp["v_hL_j"] / tmp["vol_hL_per_btl"], 0.0)
     tmp["carton_j"] = np.where(tmp["nb_btl_cart"] > 0, tmp["btl_j"] / tmp["nb_btl_cart"], 0.0)
-
     tmp["btl_h"] = horizon_j * tmp["btl_j"]
     tmp["carton_h"] = horizon_j * tmp["carton_j"]
 
-    agg = tmp.groupby("fmt").agg(bottles=("btl_h","sum"), cartons=("carton_h","sum"))
+    agg = tmp.groupby("fmt").agg(bottles=("btl_h", "sum"), cartons=("carton_h", "sum"))
     out = {fmt: {"bottles": float(agg.loc[fmt, "bottles"]), "cartons": float(agg.loc[fmt, "cartons"])} for fmt in agg.index}
     for k in ["12x33", "6x75", "4x75"]:
         out.setdefault(k, {"bottles": 0.0, "cartons": 0.0})
     return out
 
-# ====================== MAPPING ARTICLES → FORMATS ======================
 def _article_applies_formats(article: str) -> Tuple[List[str], str]:
     """
     Formats cibles + unité par défaut.
     - '12x33' → 12x33 ; '6x75' → 6x75 ; '4x75' → 4x75
     - '33' seul → 12x33 ; '75' → 6x75 & 4x75 ; sinon → tous formats
-    - 'carton/caisse/colis/étui/pack/boîte' → unité 'carton', sinon 'bottle'
+    - 'carton/caisse/colis/étui' → unité 'carton', sinon 'bottle'
     """
-    a = _canon_txt(article)
-    per = "carton" if any(w in a for w in ["carton","caisse","colis","etui","étui","pack","boite","boîte"]) else "bottle"
-    if "12x33" in a: fmts = ["12x33"]
-    elif "6x75" in a: fmts = ["6x75"]
-    elif "4x75" in a: fmts = ["4x75"]
-    elif "33" in a and "75" not in a: fmts = ["12x33"]
-    elif "75" in a: fmts = ["6x75","4x75"]
-    else: fmts = ["12x33","6x75","4x75"]
+    a = _norm_txt(article)
+    per = "carton" if any(w in a for w in ["carton", "caisse", "colis", "etui", "étui"]) else "bottle"
+    if "12x33" in a:
+        fmts = ["12x33"]
+    elif "6x75" in a:
+        fmts = ["6x75"]
+    elif "4x75" in a:
+        fmts = ["4x75"]
+    elif "33" in a and "75" not in a:
+        fmts = ["12x33"]
+    elif "75" in a:
+        fmts = ["6x75", "4x75"]
+    else:
+        fmts = ["12x33", "6x75", "4x75"]
     return fmts, per
 
-# ====================== BESOIN & ACHATS ======================
-def compute_needs_table(
-    df_conso: pd.DataFrame,
-    df_stock: pd.DataFrame,
-    forecast_fmt: Dict[str, Dict[str, float]],
-    *,
-    force_labels: bool
-) -> pd.DataFrame:
+def compute_needs_table(df_conso: pd.DataFrame, df_stock: pd.DataFrame, forecast_fmt: Dict[str, Dict[str, float]], *, force_labels: bool) -> pd.DataFrame:
     """
     Besoin = conso × (bouteilles ou cartons prévus) agrégé par formats applicables.
-    Cas particulier ÉTIQUETTES (option):
-      - si 'étiquette' dans le nom ET option cochée → conso = 1 par bouteille
-    Fusionne ensuite avec le stock (clé = libellé canonisé) et calcule À acheter.
+    Cas particulier ÉTIQUETTES:
+      - si 'étiquette' dans le nom ET option cochée → conso = 1 par bouteille (ignore le fichier de conso)
     """
     rows = []
     for _, r in df_conso.iterrows():
-        art = str(r["article"]).strip()
-        key = _canon_txt(art)
+        art = r["article"]
+        k = r["key"]
         conso = float(r["conso"])
+        a_norm = _norm_txt(art)
         fmts, per = _article_applies_formats(art)
 
         # Règle spéciale étiquettes
-        if force_labels and re.search(r"\b(etiquette|étiquette|etiquettes|étiquettes)\b", art, flags=re.I):
+        if force_labels and ("etiquette" in a_norm or "étiquette" in a_norm or "etiquettes" in a_norm or "étiquettes" in a_norm):
             per = "bottle"
             conso = 1.0  # 1 étiquette par bouteille
 
-        # sinon on respecte le per_hint lu dans le fichier conso
-        ph = str(r.get("per_hint", "")).strip().lower()
-        if ph in ("bottle", "carton"):
-            per = ph
+        # sinon on respecte le per_hint si présent
+        if str(r.get("per_hint", "")).strip() in ("bottle", "carton"):
+            per = str(r["per_hint"]).strip()
 
         qty = 0.0
         for f in fmts:
@@ -300,42 +322,48 @@ def compute_needs_table(
                 qty += conso * float(forecast_fmt.get(f, {}).get("bottles", 0.0))
             else:
                 qty += conso * float(forecast_fmt.get(f, {}).get("cartons", 0.0))
-
-        rows.append({
-            "key": key,
-            "Article": art,
-            "Unité": "par bouteille" if per == "bottle" else "par carton",
-            "Besoin horizon": qty
-        })
+        rows.append(
+            {
+                "key": k,
+                "Article": art,
+                "Unité": "par bouteille" if per == "bottle" else "par carton",
+                "Besoin horizon": qty,
+            }
+        )
 
     need_df = pd.DataFrame(rows)
     if need_df.empty:
-        return pd.DataFrame(columns=["Article","Unité","Besoin horizon","Stock dispo","À acheter"])
+        return pd.DataFrame(columns=["Article", "Unité", "Besoin horizon", "Stock dispo", "À acheter"])
 
     st_df = (
-        df_stock[["key","stock"]].rename(columns={"stock":"Stock dispo"})
-        if (df_stock is not None and not df_stock.empty)
-        else pd.DataFrame(columns=["key","Stock dispo"])
+        df_stock[["key", "stock"]].rename(columns={"stock": "Stock dispo"})
+        if df_stock is not None
+        else pd.DataFrame(columns=["key", "Stock dispo"])
     )
-
     out = need_df.merge(st_df, on="key", how="left").fillna({"Stock dispo": 0.0})
 
-    # À acheter = max(Besoin - Stock, 0) puis arrondi entier
+    # À acheter = max(Besoin - Stock, 0) puis arrondi à l'entier
     out["À acheter"] = np.maximum(out["Besoin horizon"] - out["Stock dispo"], 0.0)
 
-    # Arrondis (entiers à l’affichage et à l’export)
+    # Arrondir proprement (entiers)
     for c in ["Besoin horizon", "Stock dispo", "À acheter"]:
         out[c] = np.round(out[c], 0).astype(int)
 
-    return out.drop(columns=["key"]).sort_values("À acheter", ascending=False).reset_index(drop=True)
+    return (
+        out.drop(columns=["key"])
+        .sort_values("À acheter", ascending=False)
+        .reset_index(drop=True)
+    )
 
-# ====================== CALCULS GLOBAUX ======================
+# ====================== Calculs ======================
+
+# Prévision par format depuis les ventes historiques
 forecast = aggregate_forecast_by_format(df_raw, window_days=window_days, horizon_j=int(horizon_j))
 
-# KPIs — afficher des ÉTIQUETTES (≈ nb de bouteilles)
-b_33 = float(forecast.get("12x33", {}).get("bottles", 0.0))
-b_75 = float(forecast.get("6x75", {}).get("bottles", 0.0) + forecast.get("4x75", {}).get("bottles", 0.0))
-cartons_total = float(sum(v.get("cartons", 0.0) for v in forecast.values()))
+# KPIs — on affiche des ÉTIQUETTES (≈ nb de bouteilles) plutôt que “bouteilles”
+b_33 = forecast.get("12x33", {}).get("bottles", 0.0)
+b_75 = forecast.get("6x75", {}).get("bottles", 0.0) + forecast.get("4x75", {}).get("bottles", 0.0)
+cartons_total = sum(v.get("cartons", 0.0) for v in forecast.values())
 
 colA, colB, colC = st.columns([1.1, 1, 1])
 with colA:
@@ -345,7 +373,8 @@ with colB:
 with colC:
     kpi("Cartons prévus (tous formats)", f"{cartons_total:.0f}")
 
-# ====================== LECTURE + RÉSULTAT ======================
+# ====================== Lecture fichiers + résultat ======================
+
 df_conso = None
 df_stockc = None
 err_block = False
@@ -353,9 +382,9 @@ err_block = False
 if conso_file is not None:
     try:
         df_conso = read_consumption_xlsx(conso_file)
-        st.success("Consommation: zone **colonne B** détectée ✅")
+        st.success("Consommation: zone détectée ✅")
         with st.expander("Voir l’aperçu du fichier **Consommation**", expanded=False):
-            st.dataframe(df_conso[["article","conso","per_hint"]], use_container_width=True, hide_index=True)
+            st.dataframe(df_conso[["article", "conso", "per_hint"]], use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Erreur lecture consommation: {e}")
         err_block = True
@@ -365,9 +394,9 @@ else:
 if stock_file is not None:
     try:
         df_stockc = read_stock_xlsx(stock_file)
-        st.success("Stocks: colonne **Quantité virtuelle** détectée (ou F) ✅")
+        st.success("Stocks: colonne 'Quantité virtuelle' détectée ✅")
         with st.expander("Voir l’aperçu du fichier **Stocks**", expanded=False):
-            st.dataframe(df_stockc[["article","stock"]], use_container_width=True, hide_index=True)
+            st.dataframe(df_stockc[["article", "stock"]], use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Erreur lecture stocks: {e}")
         err_block = True
@@ -384,20 +413,23 @@ if (df_conso is not None) and (df_stockc is not None) and (not err_block):
         st.stop()
 
     total_buy = int(result["À acheter"].sum())
-    nb_items  = int((result["À acheter"] > 0).sum())
+    nb_items = int((result["À acheter"] > 0).sum())
     c1, c2 = st.columns(2)
-    with c1: kpi("Articles à acheter (nb)", f"{nb_items}")
-    with c2: kpi("Quantité totale à acheter (unités)", f"{total_buy:,}".replace(",", " "))
+    with c1:
+        kpi("Articles à acheter (nb)", f"{nb_items}")
+    with c2:
+        kpi("Quantité totale à acheter (unités)", f"{total_buy:,}".replace(",", " "))
 
     st.subheader("Proposition d’achats (triée par 'À acheter' décroissant)")
     st.dataframe(
-        result[["Article","Unité","Besoin horizon","Stock dispo","À acheter"]],
-        use_container_width=True, hide_index=True,
+        result[["Article", "Unité", "Besoin horizon", "Stock dispo", "À acheter"]],
+        use_container_width=True,
+        hide_index=True,
         column_config={
             "Besoin horizon": st.column_config.NumberColumn(format="%d"),
             "Stock dispo": st.column_config.NumberColumn(format="%d"),
             "À acheter": st.column_config.NumberColumn(format="%d"),
-        }
+        },
     )
 
     csv_bytes = result.to_csv(index=False).encode("utf-8")
