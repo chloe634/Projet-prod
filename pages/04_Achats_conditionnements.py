@@ -1,18 +1,20 @@
-# pages/04_Achats_conditionnements.py
-from common.data import get_paths
-from core.optimizer import (
-    parse_stock, VOL_TOL,
-    load_flavor_map_from_path, apply_canonical_flavor, sanitize_gouts
-)
 from __future__ import annotations
-import re, unicodedata, io
+
+import io
+import re
+import unicodedata
 from typing import Tuple, List, Dict
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from common.design import apply_theme, section, kpi
-from core.optimizer import parse_stock, VOL_TOL  # formats 12x33 / 6x75 / 4x75
+from common.data import get_paths
+from core.optimizer import (
+    parse_stock, VOL_TOL,
+    load_flavor_map_from_path, apply_canonical_flavor, sanitize_gouts,
+)
 
 # ====================== UI ======================
 apply_theme("Achats — Conditionnements", "📦")
@@ -25,6 +27,16 @@ if "df_raw" not in st.session_state or "window_days" not in st.session_state:
 
 df_raw = st.session_state.df_raw.copy()
 window_days = float(st.session_state.window_days)
+
+# --- Normalise les goûts pour avoir la colonne 'GoutCanon' ---
+_, flavor_map_path, _ = get_paths()
+fm = load_flavor_map_from_path(flavor_map_path)
+try:
+    df_sales = apply_canonical_flavor(df_raw, fm)
+    df_sales = sanitize_gouts(df_sales)
+except KeyError as e:
+    st.error(f"{e}")
+    st.stop()
 
 # --- Canonicalize flavors so aggregate_forecast_by_format has GoutCanon ---
 _, flavor_map_path, _ = get_paths()
@@ -477,9 +489,12 @@ def compute_needs_table(
 # ====================== Calculs ======================
 
 # Prévisions pour l’horizon courant (H)
-forecast_fmt_H,  forecast_ff_H  = aggregate_forecast_by_format(
+forecast_fmt_H, forecast_ff_H = aggregate_forecast_by_format(
     df_sales, window_days=window_days, horizon_j=int(horizon_j)
 )
+if not forecast_fmt_H and not forecast_ff_H:
+    st.warning("Aucun format détecté (vérifie **Stock**, **Volume vendu (hl)** et la présence de **GoutCanon**).")
+
 
 # KPIs (étiquettes ≈ bouteilles)
 b_33 = forecast_fmt_H.get("12x33", {}).get("bottles", 0.0)
@@ -530,6 +545,7 @@ if (df_conso is not None) and (df_stockc is not None) and (not err_block):
     forecast_fmt_ref, forecast_ff_ref = aggregate_forecast_by_format(
     df_sales, window_days=window_days, horizon_j=conso_days
     )
+
 
     result = compute_needs_table(
         df_conso, df_stockc,
