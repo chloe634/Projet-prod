@@ -363,41 +363,89 @@ def aggregate_forecast_by_format(
 
 def _article_applies_formats(article: str) -> Tuple[List[str], str]:
     """
-    Formats cibles + unité par défaut.
+    Retourne (formats_cibles, unité_par_défaut).
+    - Si '33' explicite -> ['12x33']
+    - Si '75' explicite -> ['6x75'] ou ['4x75'] s'ils sont précisés, sinon ['6x75','4x75']
+    - Heuristiques marque: NIKO/IGEBA/INTER WATER => 33 par défaut
+    - Sinon: tous formats (cas très rare pour une étiquette vraiment générique)
     """
     a = _norm_txt(article)
     per = "carton" if any(w in a for w in ["carton", "caisse", "colis", "etui", "étui"]) else "bottle"
-    if "12x33" in a: fmts = ["12x33"]
-    elif "6x75" in a: fmts = ["6x75"]
-    elif "4x75" in a: fmts = ["4x75"]
-    elif "33" in a and "75" not in a: fmts = ["12x33"]
-    elif "75" in a: fmts = ["6x75","4x75"]
-    else: fmts = ["12x33","6x75","4x75"]
-    return fmts, per
+
+    # formats explicites
+    if "12x33" in a or ("33" in a and "75" not in a):
+        return ["12x33"], per
+    if "6x75" in a:
+        return ["6x75"], per
+    if "4x75" in a:
+        return ["4x75"], per
+    if "75" in a:
+        return ["6x75", "4x75"], per
+
+    # heuristiques label -> 33 par défaut
+    if any(w in a for w in ["niko", "igeba", "inter water", "water kefir", "inter kefir"]):
+        return ["12x33"], per
+
+    # fallback (très rare)
+    return ["12x33", "6x75", "4x75"], per
 
 def _match_flavors_in_article(article: str, known_flavors: List[str]) -> List[str]:
     """
-    Détection robuste du goût dans le libellé (accents/ponctuation/tirets tolérés).
+    Associe l'article à un (ou plusieurs) goûts canoniques.
+    Tolère accents/ponctuation/hyphens et alias EN/FR (INTER ...).
     """
     a = _canon_txt(article)
-    found: List[str] = []
-    aliases = {
-        "menthe citron vert": ["menthe citron vert","menthe citron-vert","menthe-citron vert","menthe-citron-vert"],
-        "mangue passion": ["mangue passion","mangue-passion"],
+
+    # Alias complémentaires (clé = goût canonique)
+    extra_aliases = {
+        "mangue passion": [
+            "mangue passion", "mango passion", "mango-passion", "mango  passion", "mapa"
+        ],
+        "menthe citron vert": [
+            "menthe citron vert", "menthe-citron vert", "menthe-citron-vert",
+            "mint lime", "mint-lime", "mint & lime", "mint and lime", "mcv"
+        ],
+        "pamplemousse": [
+            "pamplemousse", "grapefruit"
+        ],
+        "infusion menthe poivrée": [
+            "menthe poivree", "menthe-poivree", "peppermint"
+        ],
+        "infusion mélisse": [
+            "melisse", "mélisse", "lemonbalm", "lemon balm", "lemon-balm"
+        ],
+        "infusion anis": [
+            "anis", "anise", "star anise", "anis etoile", "anis étoilée"
+        ],
+        "gingembre": ["gingembre", "ginger"],
+        "original": ["original", "nature", "classic"],
+        "igeba pêche": ["igeba peche", "igeba pêche", "peach"],
     }
+
+    # Table d'alias limitée aux goûts connus dans les ventes (évite bruit)
+    alias_map: dict[str, set[str]] = {}
     for g in known_flavors:
-        g_norm = _canon_txt(g)
-        if g_norm and g_norm in a:
-            found.append(g); continue
-        for k, vs in aliases.items():
-            if g_norm == _canon_txt(k) and any(_canon_txt(v) in a for v in vs):
-                found.append(g); break
+        k = _canon_txt(g)
+        alias_map.setdefault(k, set()).add(k)  # le nom lui-même
+        for al in extra_aliases.get(k, []):
+            alias_map[k].add(_canon_txt(al))
+
+    # Match si au moins un alias du goût est contenu dans l'article
+    found: List[str] = []
+    for g in known_flavors:
+        k = _canon_txt(g)
+        aliases = alias_map.get(k, {k})
+        if any(al in a for al in aliases):
+            found.append(g)
+
+    # Longueur décroissante + dédoublonnage (évite demi-matchs)
     found.sort(key=lambda s: len(_canon_txt(s)), reverse=True)
     out, seen = [], set()
     for g in found:
         if g not in seen:
             out.append(g); seen.add(g)
     return out
+
 
 def _sum_units_for_targets(
     targets: List[str], fmts: List[str], per: str,
