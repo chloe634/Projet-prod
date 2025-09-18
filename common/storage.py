@@ -8,7 +8,7 @@ import pandas as pd
 
 STATE_DIR  = Path(".streamlit")
 STATE_PATH = STATE_DIR / "saved_productions.json"
-MAX_SLOTS  = 4
+MAX_SLOTS  = 6
 
 def _ensure_dir():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
