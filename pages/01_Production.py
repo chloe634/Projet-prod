@@ -14,6 +14,9 @@ from core.optimizer import (
     compute_plan,
 )
 from common.xlsx_fill import fill_fiche_7000L_xlsx
+from common.storage import (
+    list_saved, save_snapshot, load_snapshot, delete_snapshot, rename_snapshot, MAX_SLOTS
+)
 
 # ====== Réglages modèle Excel ======
 TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"
@@ -225,3 +228,62 @@ if sp:
             st.error(f"Erreur lors du remplissage du modèle : {e}")
 else:
     st.info("Sauvegarde la production ci-dessus pour activer la génération de la fiche.")
+
+
+# ================== Mémoire longue (persistante, 4 entrées max) ==================
+st.subheader("Mémoire longue — propositions enregistrées")
+st.caption(f"Tu peux garder jusqu’à **{MAX_SLOTS}** propositions nommées, persistantes entre sessions.")
+
+coln1, coln2 = st.columns([2,1])
+default_name = ""
+if "saved_production" in st.session_state:
+    # nom par défaut : semaine du JJ-MM-YYYY + 2 premiers goûts
+    _sp = st.session_state["saved_production"]
+    try:
+        sd = _dt.date.fromisoformat(_sp["semaine_du"]).strftime("%d-%m-%Y")
+        g1 = (_sp.get("gouts") or [""])[0] if _sp.get("gouts") else ""
+        g2 = (_sp.get("gouts") or ["",""])[1] if _sp.get("gouts") else ""
+        default_name = f"{sd} — {g1}{(' + ' + g2) if g2 else ''}"
+    except Exception:
+        default_name = ""
+
+with coln1:
+    name_input = st.text_input("Nom de la proposition", value=default_name, placeholder="ex: 21-10-2025 — Gingembre + Mangue")
+with coln2:
+    if st.button("📌 Enregistrer dans la mémoire", use_container_width=True):
+        sp_cur = st.session_state.get("saved_production")
+        if not sp_cur:
+            st.error("Sauvegarde d’abord la production ci-dessus (bouton 💾).")
+        else:
+            ok, msg = save_snapshot(name_input, sp_cur)
+            (st.success if ok else st.error)(msg)
+
+saved_list = list_saved()
+if saved_list:
+    labels = [f"{it['name']} — ({it['semaine_du']})" if it.get("semaine_du") else it["name"] for it in saved_list]
+    sel = st.selectbox("Sélectionne une proposition enregistrée", options=labels, index=0)
+    idx = labels.index(sel)
+    picked = saved_list[idx]["name"]
+
+    cA, cB, cC, cD = st.columns(4)
+    with cA:
+        if st.button("▶️ Charger", use_container_width=True):
+            sp_loaded = load_snapshot(picked)
+            if sp_loaded:
+                st.session_state["saved_production"] = sp_loaded
+                st.success(f"Chargé : {picked}")
+    with cB:
+        new_name = st.text_input("Renommer", key="rename_input", placeholder="Nouveau nom…")
+        if st.button("✏️ Renommer", use_container_width=True):
+            ok, msg = rename_snapshot(picked, new_name)
+            (st.success if ok else st.error)(msg)
+    with cC:
+        if st.button("🗑️ Supprimer", use_container_width=True):
+            if delete_snapshot(picked):
+                st.success("Supprimé.")
+            else:
+                st.error("Échec suppression.")
+    with cD:
+        st.metric("Propositions stockées", f"{len(saved_list)}/{MAX_SLOTS}")
+else:
+    st.info("Aucune proposition enregistrée pour l’instant.")
