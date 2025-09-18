@@ -15,7 +15,7 @@ from core.optimizer import (
 )
 from common.xlsx_fill import fill_fiche_7000L_xlsx
 from common.storage import (
-    list_saved, save_snapshot, load_snapshot, delete_snapshot, rename_snapshot, MAX_SLOTS
+    list_saved, save_snapshot, load_snapshot, delete_snapshot, MAX_SLOTS
 )
 
 # ====== Réglages modèle Excel ======
@@ -265,25 +265,22 @@ if saved_list:
     idx = labels.index(sel)
     picked = saved_list[idx]["name"]
 
-    cA, cB, cC, cD = st.columns(4)
-    with cA:
+    col_load, col_del, col_count = st.columns(3)
+    with col_load:
         if st.button("▶️ Charger", use_container_width=True):
             sp_loaded = load_snapshot(picked)
             if sp_loaded:
                 st.session_state["saved_production"] = sp_loaded
                 st.success(f"Chargé : {picked}")
-    with cB:
-        new_name = st.text_input("Renommer", key="rename_input", placeholder="Nouveau nom…")
-        if st.button("✏️ Renommer", use_container_width=True):
-            ok, msg = rename_snapshot(picked, new_name)
-            (st.success if ok else st.error)(msg)
-    with cC:
+
+    with col_del:
         if st.button("🗑️ Supprimer", use_container_width=True):
             if delete_snapshot(picked):
                 st.success("Supprimé.")
             else:
                 st.error("Échec suppression.")
-    with cD:
+
+    with col_count:
         st.metric("Propositions stockées", f"{len(saved_list)}/{MAX_SLOTS}")
 else:
     st.info("Aucune proposition enregistrée pour l’instant.")
