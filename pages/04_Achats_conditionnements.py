@@ -1,4 +1,9 @@
 # pages/04_Achats_conditionnements.py
+from common.data import get_paths
+from core.optimizer import (
+    parse_stock, VOL_TOL,
+    load_flavor_map_from_path, apply_canonical_flavor, sanitize_gouts
+)
 from __future__ import annotations
 import re, unicodedata, io
 from typing import Tuple, List, Dict
@@ -20,6 +25,16 @@ if "df_raw" not in st.session_state or "window_days" not in st.session_state:
 
 df_raw = st.session_state.df_raw.copy()
 window_days = float(st.session_state.window_days)
+
+# --- Canonicalize flavors so aggregate_forecast_by_format has GoutCanon ---
+_, flavor_map_path, _ = get_paths()
+fm = load_flavor_map_from_path(flavor_map_path)
+try:
+    df_sales = apply_canonical_flavor(df_raw, fm)
+    df_sales = sanitize_gouts(df_sales)
+except KeyError as e:
+    st.error(f"{e}")
+    st.stop()
 
 # ---------------- Sidebar (période + options) ----------------
 with st.sidebar:
@@ -462,8 +477,8 @@ def compute_needs_table(
 # ====================== Calculs ======================
 
 # Prévisions pour l’horizon courant (H)
-forecast_fmt_H, forecast_ff_H = aggregate_forecast_by_format(
-    df_raw, window_days=window_days, horizon_j=int(horizon_j)
+forecast_fmt_H,  forecast_ff_H  = aggregate_forecast_by_format(
+    df_sales, window_days=window_days, horizon_j=int(horizon_j)
 )
 
 # KPIs (étiquettes ≈ bouteilles)
@@ -513,7 +528,7 @@ if (df_conso is not None) and (df_stockc is not None) and (not err_block):
     # Prévisions sur la même période que le fichier conso (référence B2)
     conso_days = int(conso_days or 30)
     forecast_fmt_ref, forecast_ff_ref = aggregate_forecast_by_format(
-        df_raw, window_days=window_days, horizon_j=conso_days
+    df_sales, window_days=window_days, horizon_j=conso_days
     )
 
     result = compute_needs_table(
