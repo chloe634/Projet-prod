@@ -250,12 +250,14 @@ section("Fiche de ramasse", "🚚")
 # Besoin de la production sauvegardée depuis la page "Production"
 # --- Si aucune prod en mémoire volatile, proposer de charger depuis la mémoire longue
 if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
-    st.warning("Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
-               "ou charge une proposition depuis la mémoire longue ci-dessous.")
+    st.warning(
+        "Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
+        "ou charge une proposition depuis la mémoire longue ci-dessous."
+    )
 
     saved = list_saved()
     if saved:
-        # On affiche un label lisible mais on garde le mapping vers le 'name' réel
+        # Affiche un label lisible mais conserve le mapping vers le 'name' réel
         labels = [f"{it['name']} — ({it.get('semaine_du','?')})" for it in saved]
         sel = st.selectbox("Charger une proposition enregistrée", options=labels)
         if st.button("▶️ Charger cette proposition", use_container_width=True):
@@ -264,10 +266,33 @@ if ("saved_production" not in st.session_state) or ("df_min" not in st.session_s
             if sp_loaded and sp_loaded.get("df_min") is not None:
                 st.session_state["saved_production"] = sp_loaded
                 st.success(f"Chargé : {picked_name}")
-                st.rerun()  # relance le script pour exécuter la suite automatiquement
+                st.rerun()  # relance la page pour exécuter la suite automatiquement
             else:
                 st.error("Proposition invalide (df_min manquant).")
     st.stop()
+
+# === À partir d’ici on a bien une prod en session ===
+sp = st.session_state["saved_production"]
+df_min_saved: pd.DataFrame = sp["df_min"].copy()
+ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
+
+# 1) Options dérivées de la prod sauvegardée (goût + format)
+opts_rows, seen = [], set()
+for _, r in df_min_saved.iterrows():
+    gout = str(r.get("GoutCanon") or "").strip()
+    fmt  = _format_from_stock(r.get("Stock"))
+    if not (gout and fmt):
+        continue
+    key = (gout.lower(), fmt)
+    if key in seen:
+        continue
+    seen.add(key)
+    opts_rows.append({
+        "label": f"{gout} — {fmt}",
+        "gout": gout,
+        "format": fmt,
+        "prod_hint": str(r.get("Produit") or "").strip(),  # pour matcher le CSV
+    })
 
 
 if not opts_rows:
