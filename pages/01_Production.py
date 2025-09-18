@@ -265,6 +265,47 @@ if saved_list:
     idx = labels.index(sel)
     picked = saved_list[idx]["name"]
 
+    # -------- Aperçu de la proposition sélectionnée (df_min sauvegardé) --------
+    sp_preview = load_snapshot(picked)
+    if sp_preview and isinstance(sp_preview.get("df_min"), pd.DataFrame) and not sp_preview["df_min"].empty:
+        with st.expander("👀 Aperçu de la proposition sélectionnée", expanded=False):
+            prev_df = sp_preview["df_min"].copy()
+
+            # Petits KPIs (comme pour le tableau courant)
+            prev_total_btl = int(pd.to_numeric(prev_df.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum()) if "Bouteilles à produire (arrondi)" in prev_df.columns else 0
+            prev_total_vol = float(pd.to_numeric(prev_df.get("Volume produit arrondi (hL)"), errors="coerce").fillna(0).sum()) if "Volume produit arrondi (hL)" in prev_df.columns else 0.0
+            pk1, pk2, pk3 = st.columns(3)
+            with pk1: kpi("Total bouteilles (sauvegardé)", f"{prev_total_btl:,}".replace(",", " "))
+            with pk2: kpi("Volume total (hL, sauvegardé)", f"{prev_total_vol:.2f}")
+            with pk3: kpi("Lignes", f"{len(prev_df)}")
+
+            # Image facultative comme dans le tableau principal
+            prev_df["_SKU?"] = prev_df["Produit"].apply(sku_guess)
+            prev_df["__img_path"] = [
+                find_image_path(images_dir, sku=sku_guess(p), flavor=g)
+                for p, g in zip(prev_df["Produit"], prev_df.get("GoutCanon", pd.Series(dtype=str)))
+            ]
+            prev_df["Image"] = prev_df["__img_path"].apply(load_image_bytes)
+
+            st.data_editor(
+                prev_df[[
+                    "Image","GoutCanon","Produit","Stock",
+                    "Cartons à produire (arrondi)","Bouteilles à produire (arrondi)",
+                    "Volume produit arrondi (hL)"
+                ]],
+                use_container_width=True,
+                hide_index=True,
+                disabled=True,
+                column_config={
+                    "Image": st.column_config.ImageColumn("Image", width="small"),
+                    "GoutCanon": "Goût",
+                    "Volume produit arrondi (hL)": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+    else:
+        st.info("Aperçu indisponible pour cette proposition (df_min manquant ou vide).")
+
+    # -------- Actions --------
     col_load, col_del, col_count = st.columns(3)
     with col_load:
         if st.button("▶️ Charger", use_container_width=True):
@@ -284,3 +325,4 @@ if saved_list:
         st.metric("Propositions stockées", f"{len(saved_list)}/{MAX_SLOTS}")
 else:
     st.info("Aucune proposition enregistrée pour l’instant.")
+
