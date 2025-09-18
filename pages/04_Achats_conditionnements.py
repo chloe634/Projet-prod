@@ -1,9 +1,6 @@
 # pages/04_Achats_conditionnements.py
 from __future__ import annotations
-
-import io
-import re
-import unicodedata
+import io, re, unicodedata
 from typing import Tuple, List, Dict
 
 import numpy as np
@@ -14,7 +11,7 @@ from common.design import apply_theme, section, kpi
 from core.optimizer import parse_stock, VOL_TOL  # formats 12x33 / 6x75 / 4x75
 
 
-# ====================== UI ======================
+# ====================== UI (entête) ======================
 apply_theme("Achats — Conditionnements", "📦")
 section("Prévision d’achats (conditionnements)", "📦")
 
@@ -26,26 +23,6 @@ if "df_raw" not in st.session_state or "window_days" not in st.session_state:
 df_raw = st.session_state.df_raw.copy()
 window_days = float(st.session_state.window_days)
 
-# --- Normalise les goûts pour avoir la colonne 'GoutCanon' ---
-_, flavor_map_path, _ = get_paths()
-fm = load_flavor_map_from_path(flavor_map_path)
-try:
-    df_sales = apply_canonical_flavor(df_raw, fm)
-    df_sales = sanitize_gouts(df_sales)
-except KeyError as e:
-    st.error(f"{e}")
-    st.stop()
-
-# --- Canonicalize flavors so aggregate_forecast_by_format has GoutCanon ---
-_, flavor_map_path, _ = get_paths()
-fm = load_flavor_map_from_path(flavor_map_path)
-try:
-    df_sales = apply_canonical_flavor(df_raw, fm)
-    df_sales = sanitize_gouts(df_sales)
-except KeyError as e:
-    st.error(f"{e}")
-    st.stop()
-
 # ---------------- Sidebar (période + options) ----------------
 with st.sidebar:
     st.header("Période à prévoir")
@@ -53,7 +30,10 @@ with st.sidebar:
     st.caption("Le besoin prévoit une consommation sur cet horizon à partir des ventes moyennes.")
     st.markdown("---")
     st.header("Options étiquettes")
-    force_labels = st.checkbox("Étiquettes = 1 par bouteille (forcer si 'étiquette' dans le nom)", value=True)
+    force_labels = st.checkbox(
+        "Étiquettes = 1 par bouteille (forcer si 'étiquette' dans le nom)",
+        value=True
+    )
 
 st.caption(
     f"Excel ventes courant : **{st.session_state.get('file_name','(sans nom)')}** — "
@@ -81,7 +61,7 @@ with c2:
         label_visibility="collapsed"
     )
 
-# ====================== Helpers ======================
+# ====================== Helpers généraux ======================
 
 def _norm_txt(s: str) -> str:
     s = str(s or "").strip().lower()
@@ -186,13 +166,11 @@ def read_consumption_xlsx(file) -> Tuple[pd.DataFrame, int]:
         if isinstance(b, (bytes, bytearray)):
             bio = io.BytesIO(b)
         else:
-            # Streamlit renvoie un UploadedFile -> on peut relire son buffer
             file.seek(0); bio = io.BytesIO(file.read())
         wb = openpyxl.load_workbook(bio, data_only=True)
         ws = wb[wb.sheetnames[0]]
         b2_val = ws["B2"].value
         conso_days = _parse_days_from_b2(b2_val) or 30
-        # on re-crée un buffer pour pandas
         bio.seek(0)
         df0 = pd.read_excel(bio, header=None, dtype=str)
     except Exception:
@@ -310,13 +288,16 @@ def _fmt_from_stock_text(stock_txt: str) -> str | None:
     if nb == 4  and abs(vol - 0.75) <= VOL_TOL: return "4x75"
     return None
 
+# ====================== Agrégation ventes -> prévisions ======================
+
 def aggregate_forecast_by_format(
     df_sales: pd.DataFrame, window_days: float, horizon_j: int
 ) -> tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, Dict[str, float]]]]:
     """
     Retourne un double résultat:
-      - fmt_totals[fmt] = {"bottles": ..., "cartons": ...}   (agrégé TOUS goûts)
-      - by_flavor[gout][fmt] = {"bottles": ..., "cartons": ...}  (par goût ET format)
+      - fmt_totals[fmt] = {"bottles": ..., "cartons": ...}   (agrégé TOUS groupes)
+      - by_group[group_key][fmt] = {"bottles": ..., "cartons": ...}
+    Ici, group_key = **bucket** (famille | goût intrinsèque).
     """
     req = ["Stock", "Volume vendu (hl)", "GoutCanon"]
     if any(c not in df_sales.columns for c in req):
@@ -332,7 +313,7 @@ def aggregate_forecast_by_format(
     tmp["nb_btl_cart"] = pd.to_numeric(tmp["nb_btl_cart"], errors="coerce")
     tmp["v_hL_j"] = pd.to_numeric(tmp["Volume vendu (hl)"], errors="coerce") / max(float(window_days), 1.0)
 
-    tmp["gout"] = tmp["GoutCanon"].astype(str).str.strip()
+    tmp["group"] = tmp["GoutCanon"].astype(str).str.strip()
     tmp = tmp.replace([np.inf, -np.inf], np.nan).dropna(
         subset=["vol_hL_per_btl", "nb_btl_cart", "v_hL_j"]
     )
@@ -348,102 +329,109 @@ def aggregate_forecast_by_format(
     for k in ["12x33", "6x75", "4x75"]:
         fmt_totals.setdefault(k, {"bottles": 0.0, "cartons": 0.0})
 
-    agg_ff = tmp.groupby(["gout", "fmt"]).agg(bottles=("btl_h", "sum"), cartons=("carton_h", "sum"))
-    by_flavor: Dict[str, Dict[str, Dict[str, float]]] = {}
+    agg_ff = tmp.groupby(["group", "fmt"]).agg(bottles=("btl_h", "sum"), cartons=("carton_h", "sum"))
+    by_group: Dict[str, Dict[str, Dict[str, float]]] = {}
     for (g, f), row in agg_ff.iterrows():
-        by_flavor.setdefault(g, {})[f] = {"bottles": float(row["bottles"]),
-                                          "cartons": float(row["cartons"])}
-    for g in by_flavor:
+        by_group.setdefault(g, {})[f] = {"bottles": float(row["bottles"]),
+                                         "cartons": float(row["cartons"])}
+    for g in by_group:
         for f in ["12x33", "6x75", "4x75"]:
-            by_flavor[g].setdefault(f, {"bottles": 0.0, "cartons": 0.0})
+            by_group[g].setdefault(f, {"bottles": 0.0, "cartons": 0.0})
 
-    return fmt_totals, by_flavor
+    return fmt_totals, by_group
+
+# ====================== Famille + Goût intrinsèque + Formats ======================
+
+def _pick_prod_column(df: pd.DataFrame) -> str:
+    """Trouve la colonne qui contient le libellé produit (sans mapper)."""
+    cand = ["produit","désignation","designation","libellé","libelle",
+            "nom du produit","product","sku libellé","sku libelle","sku","item"]
+    cols = {str(c).strip(): str(c).strip() for c in df.columns}
+    norm = {re.sub(r"[^a-z0-9]+", " ", k.lower()).strip(): v for k,v in cols.items()}
+    for k in cand:
+        nk = re.sub(r"[^a-z0-9]+", " ", k.lower()).strip()
+        if nk in norm:
+            return norm[nk]
+    return list(cols.values())[0]
+
+def _family_from_produit(prod: str) -> str:
+    p = _canon_txt(prod)
+    if "inter" in p: return "inter"
+    if "niko"  in p: return "niko"
+    if "igeba" in p: return "igeba"
+    return "fr"
+
+# alias FR/EN pour détecter le goût intrinsèque
+_FLAVOR_ALIASES = {
+    "original": ["original","nature","classic"],
+    "gingembre": ["gingembre","ginger"],
+    "mangue passion": ["mangue passion","mango passion","mango-passion","mango  passion","mapa"],
+    "menthe citron vert": ["menthe citron vert","menthe-citron vert","menthe-citron-vert","mint lime","mint-lime","mint & lime","mint and lime","mcv"],
+    "pamplemousse": ["pamplemousse","grapefruit"],
+    "infusion menthe poivrée": ["menthe poivree","menthe-poivree","peppermint"],
+    "infusion mélisse": ["melisse","mélisse","lemonbalm","lemon balm","lemon-balm"],
+    "infusion anis": ["anis","anise","star anise","anis etoile","anis étoilée"],
+    "igeba pêche": ["igeba peche","igeba pêche","peach"],
+}
+
+def _extract_flavor(text: str) -> str:
+    a = _canon_txt(text)
+    best = None
+    for canon, aliases in _FLAVOR_ALIASES.items():
+        for al in aliases + [canon]:
+            al_n = _canon_txt(al)
+            if al_n and al_n in a:
+                if best is None or len(al_n) > len(best[1]):
+                    best = (canon, al_n)
+    return best[0] if best else "(autre)"
+
+def _bucket_key(family: str, flavor: str) -> str:
+    return f"{family} | {flavor}"
 
 def _article_applies_formats(article: str) -> Tuple[List[str], str]:
     """
-    Retourne (formats_cibles, unité_par_défaut).
-    - Si '33' explicite -> ['12x33']
-    - Si '75' explicite -> ['6x75'] ou ['4x75'] s'ils sont précisés, sinon ['6x75','4x75']
-    - Heuristiques marque: NIKO/IGEBA/INTER WATER => 33 par défaut
-    - Sinon: tous formats (cas très rare pour une étiquette vraiment générique)
+    Formats cibles + unité par défaut.
+    - '33' explicite -> ['12x33']
+    - '75' explicite -> ['6x75']/'4x75' si précisé, sinon ['6x75','4x75']
+    - Étiquettes INTER/NIKO/IGEBA sans précision -> 33 par défaut
     """
     a = _norm_txt(article)
     per = "carton" if any(w in a for w in ["carton", "caisse", "colis", "etui", "étui"]) else "bottle"
 
-    # formats explicites
-    if "12x33" in a or ("33" in a and "75" not in a):
+    if "12x33" in a or ("33" in a and "75" not in a): return ["12x33"], per
+    if "6x75" in a: return ["6x75"], per
+    if "4x75" in a: return ["4x75"], per
+    if "75"  in a:  return ["6x75","4x75"], per
+    if ("etiquette" in a or "étiquette" in a) and any(w in a for w in ["inter","niko","igeba"]):
         return ["12x33"], per
-    if "6x75" in a:
-        return ["6x75"], per
-    if "4x75" in a:
-        return ["4x75"], per
-    if "75" in a:
-        return ["6x75", "4x75"], per
+    return ["12x33","6x75","4x75"], per
 
-    # heuristiques label -> 33 par défaut
-    if any(w in a for w in ["niko", "igeba", "inter water", "water kefir", "inter kefir"]):
-        return ["12x33"], per
-
-    # fallback (très rare)
-    return ["12x33", "6x75", "4x75"], per
-
-def _match_flavors_in_article(article: str, known_flavors: List[str]) -> List[str]:
+def _targets_from_article(article: str, known_buckets: List[str]) -> List[str]:
     """
-    Associe l'article à un (ou plusieurs) goûts canoniques.
-    Tolère accents/ponctuation/hyphens et alias EN/FR (INTER ...).
+    Pour les étiquettes : renvoie le bucket 'famille | goût' ciblé.
+    Pour articles génériques (capsules/cartons) -> [] (agrégat tous buckets).
+    Si on ne détecte pas clairement le goût sur une étiquette, on retourne [] et on traitera comme 0.
     """
     a = _canon_txt(article)
+    is_label = ("etiquette" in a or "étiquette" in a)
 
-    # Alias complémentaires (clé = goût canonique)
-    extra_aliases = {
-        "mangue passion": [
-            "mangue passion", "mango passion", "mango-passion", "mango  passion", "mapa"
-        ],
-        "menthe citron vert": [
-            "menthe citron vert", "menthe-citron vert", "menthe-citron-vert",
-            "mint lime", "mint-lime", "mint & lime", "mint and lime", "mcv"
-        ],
-        "pamplemousse": [
-            "pamplemousse", "grapefruit"
-        ],
-        "infusion menthe poivrée": [
-            "menthe poivree", "menthe-poivree", "peppermint"
-        ],
-        "infusion mélisse": [
-            "melisse", "mélisse", "lemonbalm", "lemon balm", "lemon-balm"
-        ],
-        "infusion anis": [
-            "anis", "anise", "star anise", "anis etoile", "anis étoilée"
-        ],
-        "gingembre": ["gingembre", "ginger"],
-        "original": ["original", "nature", "classic"],
-        "igeba pêche": ["igeba peche", "igeba pêche", "peach"],
-    }
+    if not is_label:
+        return []  # générique
 
-    # Table d'alias limitée aux goûts connus dans les ventes (évite bruit)
-    alias_map: dict[str, set[str]] = {}
-    for g in known_flavors:
-        k = _canon_txt(g)
-        alias_map.setdefault(k, set()).add(k)  # le nom lui-même
-        for al in extra_aliases.get(k, []):
-            alias_map[k].add(_canon_txt(al))
+    # famille
+    if   "inter" in a: fam = "inter"
+    elif "niko"  in a: fam = "niko"
+    elif "igeba" in a: fam = "igeba"
+    else:               fam = "fr"
 
-    # Match si au moins un alias du goût est contenu dans l'article
-    found: List[str] = []
-    for g in known_flavors:
-        k = _canon_txt(g)
-        aliases = alias_map.get(k, {k})
-        if any(al in a for al in aliases):
-            found.append(g)
+    flv = _extract_flavor(article)
+    if flv == "(autre)":
+        return []  # on préfère ne rien compter plutôt qu'agréger mal
 
-    # Longueur décroissante + dédoublonnage (évite demi-matchs)
-    found.sort(key=lambda s: len(_canon_txt(s)), reverse=True)
-    out, seen = [], set()
-    for g in found:
-        if g not in seen:
-            out.append(g); seen.add(g)
-    return out
+    key = _bucket_key(fam, flv)
+    return [key] if key in set(known_buckets) else []
 
+# ====================== Sommes utilitaires ======================
 
 def _sum_units_for_targets(
     targets: List[str], fmts: List[str], per: str,
@@ -452,36 +440,36 @@ def _sum_units_for_targets(
 ) -> float:
     key = "bottles" if per == "bottle" else "cartons"
     total = 0.0
-    if targets:  # spécifique goût
+    if targets:  # spécifique bucket(s)
         for g in targets:
             for f in fmts:
                 total += float(ff_forecast.get(g, {}).get(f, {}).get(key, 0.0))
-    else:       # générique
+    else:       # générique → agrégé tous buckets
         for f in fmts:
             total += float(fmt_forecast.get(f, {}).get(key, 0.0))
     return total
+
+# ====================== Calcul de la table des besoins ======================
 
 def compute_needs_table(
     df_conso: pd.DataFrame,
     df_stock: pd.DataFrame,
     *,
-    # prévisions sur l'horizon demandé
     forecast_fmt_H: Dict[str, Dict[str, float]],
     forecast_ff_H: Dict[str, Dict[str, Dict[str, float]]],
-    # prévisions sur la période du fichier consommation (B2)
     forecast_fmt_ref: Dict[str, Dict[str, float]],
     forecast_ff_ref: Dict[str, Dict[str, Dict[str, float]]],
     force_labels: bool
 ) -> pd.DataFrame:
     """
-    1) Détecte pour chaque article les formats + goûts visés
+    1) Détecte pour chaque article: formats + bucket(s) (famille|goût) visés
     2) Calcule un coef par unité depuis la période de conso (B2):
          coef = conso_total / unités_sur_période_B2
        (sauf articles "1 pour 1": coef = 1)
     3) Besoin(H) = coef × unités_prévues_sur_H
     """
     rows = []
-    known_flavors = list(forecast_ff_H.keys())  # même ensemble que ref
+    known_buckets = list(forecast_ff_H.keys())  # mêmes clés que ref
 
     for _, r in df_conso.iterrows():
         art = r["article"]; k = r["key"]
@@ -489,17 +477,22 @@ def compute_needs_table(
         a_norm = _norm_txt(art)
 
         fmts, per = _article_applies_formats(art)
-        targets = _targets_from_article(art, known_flavors)
+        targets = _targets_from_article(art, known_buckets)
 
-        # unités prévues
-        units_H   = _sum_units_for_targets(targets, fmts, per, forecast_fmt_H,   forecast_ff_H)
-        units_ref = _sum_units_for_targets(targets, fmts, per, forecast_fmt_ref, forecast_ff_ref)
-
-        # Articles “1 pour 1”
         is_label    = ("etiquette" in a_norm or "étiquette" in a_norm)
         is_capsule  = ("capsule" in a_norm)
         is_transport_carton = ("carton" in a_norm and ("33" in a_norm or "75" in a_norm))
 
+        # unités prévues
+        if is_label and not targets:
+            # étiquette non reconnue précisément → ne rien sur-agréger
+            units_H = 0.0
+            units_ref = 0.0
+        else:
+            units_H   = _sum_units_for_targets(targets, fmts, per, forecast_fmt_H,   forecast_ff_H)
+            units_ref = _sum_units_for_targets(targets, fmts, per, forecast_fmt_ref, forecast_ff_ref)
+
+        # Articles “1 pour 1”
         if force_labels and is_label:
             coef = 1.0
         elif is_capsule:
@@ -532,104 +525,9 @@ def compute_needs_table(
 
     return out.drop(columns=["key"]).sort_values("À acheter", ascending=False).reset_index(drop=True)
 
-def _pick_prod_column(df: pd.DataFrame) -> str:
-    """
-    Trouve la colonne qui contient le libellé produit (sans mapper).
-    """
-    cand = ["produit","désignation","designation","libellé","libelle",
-            "nom du produit","product","sku libellé","sku libelle","sku","item"]
-    cols = {str(c).strip(): str(c).strip() for c in df.columns}
-    norm = {re.sub(r"[^a-z0-9]+", " ", k.lower()).strip(): v for k,v in cols.items()}
-    for k in cand:
-        nk = re.sub(r"[^a-z0-9]+", " ", k.lower()).strip()
-        if nk in norm: 
-            return norm[nk]
-    # fallback: 1re colonne non vide
-    return list(cols.values())[0]
+# ====================== Calculs principaux ======================
 
-def _family_from_produit(prod: str) -> str:
-    p = _canon_txt(prod)
-    if "inter" in p: return "inter"
-    if "niko"  in p: return "niko"
-    if "igeba" in p: return "igeba"
-    return "fr"
-
-# dictionnaire d’alias (FR/EN) pour détecter le goût “intrinsèque”
-_FLAVOR_ALIASES = {
-    "original": ["original","nature","classic"],
-    "gingembre": ["gingembre","ginger"],
-    "mangue passion": ["mangue passion","mango passion","mango-passion","mango  passion","mapa"],
-    "menthe citron vert": ["menthe citron vert","menthe-citron vert","menthe-citron-vert","mint lime","mint-lime","mint & lime","mint and lime","mcv"],
-    "pamplemousse": ["pamplemousse","grapefruit"],
-    "infusion menthe poivrée": ["menthe poivree","menthe-poivree","peppermint"],
-    "infusion mélisse": ["melisse","mélisse","lemonbalm","lemon balm","lemon-balm"],
-    "infusion anis": ["anis","anise","star anise","anis etoile","anis étoilée"],
-    "igeba pêche": ["igeba peche","igeba pêche","peach"],
-}
-
-def _extract_flavor(text: str) -> str:
-    a = _canon_txt(text)
-    # cherche l’alias le plus long qui matche
-    best = None
-    for canon, aliases in _FLAVOR_ALIASES.items():
-        for al in aliases + [canon]:
-            al_n = _canon_txt(al)
-            if al_n and al_n in a:
-                if best is None or len(al_n) > len(best[1]):
-                    best = (canon, al_n)
-    return best[0] if best else "(autre)"
-
-def _bucket_key(family: str, flavor: str) -> str:
-    return f"{family} | {flavor}"
-
-def _article_applies_formats(article: str) -> Tuple[List[str], str]:
-    """
-    Formats cibles + unité par défaut.
-    - '33' explicite -> ['12x33']
-    - '75' explicite -> ['6x75']/'4x75' si précisé, sinon ['6x75','4x75']
-    - Pour les étiquettes de marques privées (INTER/NIKO/IGEBA) sans précision -> 33 par défaut
-    """
-    a = _norm_txt(article)
-    per = "carton" if any(w in a for w in ["carton", "caisse", "colis", "etui", "étui"]) else "bottle"
-
-    if "12x33" in a or ("33" in a and "75" not in a): return ["12x33"], per
-    if "6x75" in a: return ["6x75"], per
-    if "4x75" in a: return ["4x75"], per
-    if "75"  in a:  return ["6x75","4x75"], per
-    if ("etiquette" in a or "étiquette" in a) and any(w in a for w in ["inter","niko","igeba"]):
-        return ["12x33"], per
-    return ["12x33","6x75","4x75"], per
-
-def _targets_from_article(article: str, known_buckets: List[str]) -> List[str]:
-    """
-    Renvoie une liste de 'buckets' famille|goût à partir de l'intitulé article.
-    - Pour les étiquettes : on détecte famille + goût ; si introuvable -> [] (pas d’agrégat sauvage)
-    - Pour articles génériques (capsules/cartons), retourne [] pour agréger tous les buckets.
-    """
-    a = _canon_txt(article)
-    is_label = ("etiquette" in a or "étiquette" in a)
-
-    if not is_label:
-        return []  # générique
-
-    # famille
-    if   "inter" in a: fam = "inter"
-    elif "niko"  in a: fam = "niko"
-    elif "igeba" in a: fam = "igeba"
-    else:               fam = "fr"
-
-    flv = _extract_flavor(article)
-    if flv == "(autre)":
-        return []  # on préfère ne pas sur-agréger si le goût n'est pas clairement identifié
-
-    k = _bucket_key(fam, flv)
-    return [k] if k in set(known_buckets) else []
-
-
-# ====================== Calculs ======================
-
-# --- Prévisions par FAMILLE|GOÛT_INTRINSÈQUE + FORMAT (pas de flavor_map) ---
-# 1) on a besoin du nom produit pour extraire famille+goût
+# --- Construire le bucket FAMILLE|GOÛT intrinsèque (sans flavor_map) ---
 prod_col = _pick_prod_column(df_raw)
 df_ff = df_raw.copy()
 df_ff["__prod"]  = df_ff[prod_col].astype(str)
@@ -637,15 +535,10 @@ df_ff["__fam"]   = df_ff["__prod"].map(_family_from_produit)
 df_ff["__flav"]  = df_ff["__prod"].map(_extract_flavor)
 df_ff["GoutCanon"] = df_ff.apply(lambda r: _bucket_key(r["__fam"], r["__flav"]), axis=1)
 
-# 2) prévisions sur l’horizon H (H = horizon_j)
+# Prévisions pour l’horizon courant (H)
 forecast_fmt_H, forecast_ff_H = aggregate_forecast_by_format(
     df_ff, window_days=window_days, horizon_j=int(horizon_j)
 )
-
-# KPIs (inchangés)
-b_33 = forecast_fmt_H.get("12x33", {}).get("bottles", 0.0)
-b_75 = forecast_fmt_H.get("6x75", {}).get("bottles", 0.0) + forecast_fmt_H.get("4x75", {}).get("bottles", 0.0)
-cartons_total = sum(v.get("cartons", 0.0) for v in forecast_fmt_H.values())
 
 # KPIs (étiquettes ≈ bouteilles)
 b_33 = forecast_fmt_H.get("12x33", {}).get("bottles", 0.0)
@@ -694,10 +587,8 @@ if (df_conso is not None) and (df_stockc is not None) and (not err_block):
     # Prévisions sur la même période que le fichier conso (référence B2)
     conso_days = int(conso_days or 30)
     forecast_fmt_ref, forecast_ff_ref = aggregate_forecast_by_format(
-    df_ff, window_days=window_days, horizon_j=conso_days
+        df_ff, window_days=window_days, horizon_j=conso_days
     )
-
-
 
     result = compute_needs_table(
         df_conso, df_stockc,
