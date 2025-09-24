@@ -11,6 +11,7 @@ python-dateutil
 pdfplumber
 pypdf
 tomli
+PyGithub>=1.59
 
 
 
