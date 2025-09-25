@@ -131,7 +131,7 @@ Producteur de boissons fermentées
     msg.set_content(body_txt + "\n\n" + SIG_TXT)
     msg.add_alternative(body_html + SIG_HTML, subtype="html")
 
-   # Images inline (CID) pour la signature — version robuste + logs
+    # Images inline (CID) pour la signature — version minimisée (pas de filename)
     INLINE_IMAGES = {
         "symbiose": "assets/signature/logo_symbiose.png",
         "niko":     "assets/signature/NIKO_Logo.png",
@@ -149,16 +149,17 @@ Producteur de boissons fermentées
                 st.caption(f"⚠️ Signature: fichier vide → {path}")
                 continue
     
-            # On force PNG (évite les surprises mimetype) et on pose Disposition + Content-ID
             related = html_part.add_related(
                 data,
                 maintype="image",
-                subtype="png",                       # force PNG
-                cid=f"<{cid}>",                      # référence via src='cid:...'
-                filename=os.path.basename(path),
+                subtype="png",             # force PNG
+                cid=f"<{cid}>",            # référence via src="cid:cid"
+                # ❌ pas de filename pour éviter d’être listé comme PJ
             )
-            # Certains clients aiment avoir la Disposition explicite
-            related.add_header("Content-Disposition", "inline", filename=os.path.basename(path))
+            # disposition explicite en inline
+            related.add_header("Content-Disposition", "inline")
+            # astuce utilisée par Gmail pour associer CID ↔ image
+            related.add_header("X-Attachment-Id", cid)
         except Exception as e:
             st.caption(f"⚠️ Signature: erreur sur {path} → {e}")
 
