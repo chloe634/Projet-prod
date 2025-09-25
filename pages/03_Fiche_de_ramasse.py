@@ -16,9 +16,6 @@ from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 import smtplib
 from email.message import EmailMessage
 from common.storage import list_saved, load_snapshot
-from email.utils import formataddr
-import mimetypes, os
-
 
 
 # === HELPERS EMAIL (robuste + fallback) =======================================
@@ -83,19 +80,11 @@ def _get_email_cfg():
     return cfg
 
 
-def send_mail_with_pdf(
-    pdf_bytes: bytes,
-    filename: str,
-    total_palettes: int,
-    to_list: list[str],
-    date_ramasse: dt.date,          # on l’utilise dans l’objet
-    bcc_me: bool = True
-):
+def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str], bcc_me: bool = True):
     cfg = _get_email_cfg()
-    sender = cfg["sender"]          # = cfg["user"]
-    from_value = formataddr(("Ferment Station – Logistique", sender))
+    sender = cfg["sender"]
 
-    # Corps du mail (texte + HTML)
+    # Corps texte + HTML
     body_txt = f"""Bonjour,
 
 Nous aurions besoin d’une ramasse pour demain.
@@ -108,70 +97,23 @@ Bon après-midi."""
 Pour <strong>{total_palettes}</strong> palettes.</p>
 <p>Merci,<br>Bon après-midi.</p>"""
 
-    # --- Signature (texte + HTML avec images inline) ---
-    SIG_TXT = """--
-Ferment Station
-Producteur de boissons fermentées
-26 Rue Robert Witchitz – 94200 Ivry-sur-Seine
-09 71 22 78 95"""
-
-    SIG_HTML = """
-<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
-<div style="font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111827">
-  <div style="font-size:18px;font-weight:700">Ferment Station</div>
-  <div style="font-weight:700;color:#0f766e;margin-top:2px">Producteur de boissons fermentées</div>
-  <div style="margin-top:12px">26 Rue Robert Witchitz – 94200 Ivry-sur-Seine</div>
-  <div><a href="tel:+33971227895" style="color:#2563eb;text-decoration:underline">09 71 22 78 95</a></div>
-  <div style="margin-top:14px">
-    <img src="cid:symbiose" alt="Symbiose" height="36" style="vertical-align:middle;margin-right:14px;border:0">
-    <img src="cid:niko"     alt="Niko"     height="36" style="vertical-align:middle;border:0">
-  </div>
-</div>
-"""
-
-    # Message
     msg = EmailMessage()
-    msg["Subject"] = f"Demande de ramasse — {date_ramasse:%d/%m/%Y} — Ferment Station"
-    msg["From"] = from_value
+    msg["Subject"] = "Demande de ramasse"
+    msg["From"] = sender
     msg["To"] = ", ".join(to_list)
     msg["Reply-To"] = sender
-    msg["X-Priority"] = "1"              # surtout pour Outlook
-    msg["X-MSMail-Priority"] = "High"
-    msg["Importance"] = "High"
     msg["X-App-Trace"] = "ferment-station/fiche-ramasse"
 
-    # Corps texte + signature
-    msg.set_content(body_txt + "\n\n" + SIG_TXT)
-    # Corps HTML + signature
-    msg.add_alternative(body_html + SIG_HTML, subtype="html")
-
-    # Images inline (CID) pour la signature
-    INLINE_IMAGES = {
-        "symbiose": "assets/signature/logo_symbiose.png",
-        "niko":     "assets/signature/NIKO_Logo.png",
-    }
-    html_part = msg.get_payload()[-1]  # la partie HTML
-    for cid, path in INLINE_IMAGES.items():
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                data = f.read()
-            mime, _ = mimetypes.guess_type(path)
-            maintype, subtype = (mime or "image/png").split("/", 1)
-            html_part.add_related(
-                data,
-                maintype=maintype,
-                subtype=subtype,
-                cid=f"<{cid}>",                     # référence via src="cid:xxx"
-                filename=os.path.basename(path),
-            )
+    msg.set_content(body_txt)
+    msg.add_alternative(body_html, subtype="html")
 
     # PJ PDF
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
-    # BCC (copie à soi)
+    # BCC (copie à soi pour vérif de distribution)
     bcc_list = [sender] if bcc_me else []
 
-    # Envoi (465 SSL ou 587 STARTTLS)
+    # Envoi : support 465 (SSL) et 587 (STARTTLS)
     if int(cfg["port"]) == 465:
         import ssl
         with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
@@ -183,7 +125,8 @@ Producteur de boissons fermentées
             s.login(cfg["user"], cfg["password"])
             refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
 
-    return refused  # {} si tout a été accepté par le serveur
+    return refused  # {} si tout est accepté par le serveur SMTP
+
 # ============================================================================#
 
 
@@ -550,35 +493,26 @@ else:
     if pdf_bytes is None:
         st.info("Génère d’abord la version PDF (bouton de téléchargement) pour pouvoir l’envoyer par e-mail.")
 
-# 3) UI destinataires + bouton d'envoi  (pré-rempli sans masquage ***)
-try:
-    _cfg_preview = _get_email_cfg()
-    sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
-    rec = _cfg_preview.get("recipients", [])
-    rec_str = rec if isinstance(rec, str) else ", ".join([x for x in rec if x])
-except RuntimeError as e:
-    sender_hint = None
-    rec_str = ""
-    st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
-
-# Astuce anti-masquage: on seed la valeur via session_state avec un caractère invisible
-_PREFILL = (rec_str or "") + "\u200b"
-if "ramasse_email_to" not in st.session_state:
-    st.session_state["ramasse_email_to"] = _PREFILL
-
-to_input = st.text_input(
-    "Destinataires (séparés par des virgules)",
-    key="ramasse_email_to",
-    placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr",
-)
-
-def _parse_emails(s: str):
-    return [e.strip() for e in (s or "").replace("\u200b","").split(",") if e.strip()]
-
-to_list = _parse_emails(st.session_state.get("ramasse_email_to",""))
-
-if sender_hint:
-    st.caption(f"Expéditeur utilisé : **{sender_hint}**")
+    # 3) UI destinataires + bouton d'envoi
+    # Pré-remplir depuis secrets (avec fallback)
+    try:
+        _cfg_preview = _get_email_cfg()
+        default_to  = ", ".join(_cfg_preview.get("recipients", []))
+        sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
+    except RuntimeError as e:
+        default_to  = ""
+        sender_hint = None
+        st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
+    
+    to_input = st.text_input(
+        "Destinataires (séparés par des virgules)",
+        value=default_to,
+        placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr"
+    )
+    to_list = [x.strip() for x in to_input.split(",") if x.strip()]
+    
+    if sender_hint:
+        st.caption(f"Expéditeur utilisé : **{sender_hint}**")
 
 
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
@@ -592,7 +526,7 @@ if sender_hint:
                 size_mb = len(pdf_bytes) / (1024*1024)
                 st.caption(f"Taille PDF : {size_mb:.2f} Mo")
     
-                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, date_ramasse, bcc_me=True)
+                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, bcc_me=True)
     
                 st.write("Destinataires envoyés :", ", ".join(to_list))
                 if refused:
