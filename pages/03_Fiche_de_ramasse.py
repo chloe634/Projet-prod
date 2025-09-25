@@ -131,25 +131,37 @@ Producteur de boissons fermentées
     msg.set_content(body_txt + "\n\n" + SIG_TXT)
     msg.add_alternative(body_html + SIG_HTML, subtype="html")
 
-    # Images inline (CID) pour la signature
+   # Images inline (CID) pour la signature — version robuste + logs
     INLINE_IMAGES = {
-        "symbiose": "assets/signature/logo_logo_logo_logo_logo_logo_symbiose.png",
+        "symbiose": "assets/signature/logo_symbiose.png",
         "niko":     "assets/signature/NIKO_Logo.png",
     }
-    html_part = msg.get_payload()[-1]  # la partie HTML
+    html_part = msg.get_payload()[-1]  # partie HTML (text/html)
+    
     for cid, path in INLINE_IMAGES.items():
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            st.caption(f"⚠️ Signature: fichier introuvable → {path}")
+            continue
+        try:
             with open(path, "rb") as f:
                 data = f.read()
-            mime, _ = mimetypes.guess_type(path)
-            maintype, subtype = (mime or "image/png").split("/", 1)
-            html_part.add_related(
+            if not data:
+                st.caption(f"⚠️ Signature: fichier vide → {path}")
+                continue
+    
+            # On force PNG (évite les surprises mimetype) et on pose Disposition + Content-ID
+            related = html_part.add_related(
                 data,
-                maintype=maintype,
-                subtype=subtype,
-                cid=f"<{cid}>",                    # référence via src="cid:xxx"
+                maintype="image",
+                subtype="png",                       # force PNG
+                cid=f"<{cid}>",                      # référence via src='cid:...'
                 filename=os.path.basename(path),
             )
+            # Certains clients aiment avoir la Disposition explicite
+            related.add_header("Content-Disposition", "inline", filename=os.path.basename(path))
+        except Exception as e:
+            st.caption(f"⚠️ Signature: erreur sur {path} → {e}")
+
 
     # Pièce jointe PDF
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
