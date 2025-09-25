@@ -550,26 +550,19 @@ else:
     if pdf_bytes is None:
         st.info("Génère d’abord la version PDF (bouton de téléchargement) pour pouvoir l’envoyer par e-mail.")
 
-    # 3) UI destinataires + bouton d'envoi
-    # Pré-remplir depuis secrets (avec fallback)
-# 3) UI destinataires + bouton d'envoi
-# Pré-remplir depuis secrets (avec fallback) SANS affichage "***"
+# 3) UI destinataires + bouton d'envoi  (pré-rempli sans masquage ***)
 try:
     _cfg_preview = _get_email_cfg()
     sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
     rec = _cfg_preview.get("recipients", [])
-    if isinstance(rec, str):
-        rec_str = rec
-    else:
-        rec_str = ", ".join([x for x in rec if x])
+    rec_str = rec if isinstance(rec, str) else ", ".join([x for x in rec if x])
 except RuntimeError as e:
     sender_hint = None
     rec_str = ""
     st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
 
-# Astuce anti-masquage Streamlit: ajoute un espace fin invisible
+# Astuce anti-masquage: on seed la valeur via session_state avec un caractère invisible
 _PREFILL = (rec_str or "") + "\u200b"
-
 if "ramasse_email_to" not in st.session_state:
     st.session_state["ramasse_email_to"] = _PREFILL
 
@@ -586,7 +579,6 @@ to_list = _parse_emails(st.session_state.get("ramasse_email_to",""))
 
 if sender_hint:
     st.caption(f"Expéditeur utilisé : **{sender_hint}**")
-
 
 
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
