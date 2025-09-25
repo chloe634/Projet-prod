@@ -175,7 +175,7 @@ Producteur de boissons fermentées
     if int(cfg["port"]) == 465:
         import ssl
         with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
-            s.login(cfg()["user"], cfg()["password"])
+            s.login(cfg["user"], cfg["password"])
             refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
     else:
         with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
@@ -552,24 +552,41 @@ else:
 
     # 3) UI destinataires + bouton d'envoi
     # Pré-remplir depuis secrets (avec fallback)
-    try:
-        _cfg_preview = _get_email_cfg()
-        default_to  = ", ".join(_cfg_preview.get("recipients", []))
-        sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
-    except RuntimeError as e:
-        default_to  = ""
-        sender_hint = None
-        st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
-    
-    to_input = st.text_input(
-        "Destinataires (séparés par des virgules)",
-        value=default_to,
-        placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr"
-    )
-    to_list = [x.strip() for x in to_input.split(",") if x.strip()]
-    
-    if sender_hint:
-        st.caption(f"Expéditeur utilisé : **{sender_hint}**")
+# 3) UI destinataires + bouton d'envoi
+# Pré-remplir depuis secrets (avec fallback) SANS affichage "***"
+try:
+    _cfg_preview = _get_email_cfg()
+    sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
+    rec = _cfg_preview.get("recipients", [])
+    if isinstance(rec, str):
+        rec_str = rec
+    else:
+        rec_str = ", ".join([x for x in rec if x])
+except RuntimeError as e:
+    sender_hint = None
+    rec_str = ""
+    st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
+
+# Astuce anti-masquage Streamlit: ajoute un espace fin invisible
+_PREFILL = (rec_str or "") + "\u200b"
+
+if "ramasse_email_to" not in st.session_state:
+    st.session_state["ramasse_email_to"] = _PREFILL
+
+to_input = st.text_input(
+    "Destinataires (séparés par des virgules)",
+    key="ramasse_email_to",
+    placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr",
+)
+
+def _parse_emails(s: str):
+    return [e.strip() for e in (s or "").replace("\u200b","").split(",") if e.strip()]
+
+to_list = _parse_emails(st.session_state.get("ramasse_email_to",""))
+
+if sender_hint:
+    st.caption(f"Expéditeur utilisé : **{sender_hint}**")
+
 
 
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
@@ -583,7 +600,7 @@ else:
                 size_mb = len(pdf_bytes) / (1024*1024)
                 st.caption(f"Taille PDF : {size_mb:.2f} Mo")
     
-                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, bcc_me=True)
+                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, date_ramasse, bcc_me=True)
     
                 st.write("Destinataires envoyés :", ", ".join(to_list))
                 if refused:
