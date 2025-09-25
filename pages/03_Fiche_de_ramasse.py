@@ -1,33 +1,31 @@
 # pages/03_Fiche_de_ramasse.py
 from __future__ import annotations
-import os, re, datetime as dt
-import unicodedata
+
+import os, re, datetime as dt, unicodedata, mimetypes
 import pandas as pd
 import streamlit as st
 from dateutil.tz import gettz
 
 from common.design import apply_theme, section, kpi
-# au lieu de: from common.xlsx_fill import fill_bl_enlevements_xlsx
 import importlib
 import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
 from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
-# === EMAIL (ajouter ces 2 lignes en haut) ===
+
+# === EMAIL ===
 import smtplib
 from email.message import EmailMessage
+from email.utils import formataddr
+from pathlib import Path
+
 from common.storage import list_saved, load_snapshot
 
-
-# === HELPERS EMAIL (robuste + fallback) =======================================
-import os
-from pathlib import Path
-import streamlit as st
-
+# ======================= Helpers email (secrets + fallback) ===================
 # tomllib (Py 3.11+) ou tomli (Py 3.8–3.10)
 try:
     import tomllib as _toml
 except Exception:
-    import tomli as _toml  # ➜ ajoute 'tomli' dans requirements.txt
+    import tomli as _toml  # ➜ ajoute 'tomli' dans requirements.txt si besoin
 
 def _load_email_secrets_fallback() -> dict:
     """
@@ -36,22 +34,16 @@ def _load_email_secrets_fallback() -> dict:
       2) <racine>/.streamlit/secrets.toml
       3) <racine>/streamlit/secrets.toml (compat ancien dossier)
     """
-    # 1) Secrets “officiels” (Streamlit Cloud UI)
     if "email" in st.secrets:
         return dict(st.secrets.get("email", {}))
 
-    # 2/3) Fichiers du repo (dev local uniquement)
-    # On calcule la racine du projet depuis app/pages
     try:
         proj_root = Path(__file__).resolve().parents[1]
     except Exception:
         proj_root = Path(os.getcwd())
 
-    candidates = [
-        proj_root / ".streamlit" / "secrets.toml",
-        proj_root / "streamlit" / "secrets.toml",
-    ]
-    for p in candidates:
+    for p in [proj_root / ".streamlit" / "secrets.toml",
+              proj_root / "streamlit" / "secrets.toml"]:
         try:
             if p.exists():
                 with open(p, "rb") as f:
@@ -67,7 +59,6 @@ def _get_email_cfg():
     required = ("host", "port", "user", "password")
     missing = [k for k in required if not str(cfg.get(k, "")).strip()]
     if missing:
-        # L’UI reste utilisable (saisie manuelle), mais on explique la cause
         raise RuntimeError(
             "Secrets email manquants: " + ", ".join(missing) +
             " — place le bloc [email] dans Settings → Secrets (Cloud) ou .streamlit/secrets.toml (local)."
@@ -79,12 +70,20 @@ def _get_email_cfg():
     cfg["recipients"] = rec
     return cfg
 
-
-def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str], bcc_me: bool = True):
+# =================== Envoi email (HTML + signature + images) ==================
+def send_mail_with_pdf(
+    pdf_bytes: bytes,
+    filename: str,
+    total_palettes: int,
+    to_list: list[str],
+    date_ramasse: dt.date,
+    bcc_me: bool = True
+):
     cfg = _get_email_cfg()
-    sender = cfg["sender"]
+    sender = cfg["sender"]                  # = cfg["user"]
+    from_value = formataddr(("Ferment Station – Logistique", sender))
 
-    # Corps texte + HTML
+    # Corps
     body_txt = f"""Bonjour,
 
 Nous aurions besoin d’une ramasse pour demain.
@@ -97,27 +96,72 @@ Bon après-midi."""
 Pour <strong>{total_palettes}</strong> palettes.</p>
 <p>Merci,<br>Bon après-midi.</p>"""
 
+    # Signature (texte + HTML avec images inline)
+    SIG_TXT = """--
+Ferment Station
+Producteur de boissons fermentées
+26 Rue Robert Witchitz – 94200 Ivry-sur-Seine
+09 71 22 78 95"""
+
+    SIG_HTML = """
+<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+<div style="font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111827">
+  <div style="font-size:18px;font-weight:700">Ferment Station</div>
+  <div style="font-weight:700;color:#0f766e;margin-top:2px">Producteur de boissons fermentées</div>
+  <div style="margin-top:12px">26 Rue Robert Witchitz – 94200 Ivry-sur-Seine</div>
+  <div><a href="tel:+33971227895" style="color:#2563eb;text-decoration:underline">09 71 22 78 95</a></div>
+  <div style="margin-top:14px">
+    <img src="cid:symbiose" alt="Symbiose" height="36" style="vertical-align:middle;margin-right:14px;border:0">
+    <img src="cid:niko"     alt="Niko"     height="36" style="vertical-align:middle;border:0">
+  </div>
+</div>
+"""
+
     msg = EmailMessage()
-    msg["Subject"] = "Demande de ramasse"
-    msg["From"] = sender
+    msg["Subject"] = f"Demande de ramasse — {date_ramasse:%d/%m/%Y} — Ferment Station"
+    msg["From"] = from_value
     msg["To"] = ", ".join(to_list)
     msg["Reply-To"] = sender
+    msg["X-Priority"] = "1"                 # surtout pour Outlook
+    msg["X-MSMail-Priority"] = "High"
+    msg["Importance"] = "High"
     msg["X-App-Trace"] = "ferment-station/fiche-ramasse"
 
-    msg.set_content(body_txt)
-    msg.add_alternative(body_html, subtype="html")
+    # Texte + HTML (+ signature)
+    msg.set_content(body_txt + "\n\n" + SIG_TXT)
+    msg.add_alternative(body_html + SIG_HTML, subtype="html")
 
-    # PJ PDF
+    # Images inline (CID) pour la signature
+    INLINE_IMAGES = {
+        "symbiose": "assets/signature/logo_symbiose.png",
+        "niko":     "assets/signature/NIKO_Logo.png",
+    }
+    html_part = msg.get_payload()[-1]  # la partie HTML
+    for cid, path in INLINE_IMAGES.items():
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                data = f.read()
+            mime, _ = mimetypes.guess_type(path)
+            maintype, subtype = (mime or "image/png").split("/", 1)
+            html_part.add_related(
+                data,
+                maintype=maintype,
+                subtype=subtype,
+                cid=f"<{cid}>",                    # référence via src="cid:xxx"
+                filename=os.path.basename(path),
+            )
+
+    # Pièce jointe PDF
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
-    # BCC (copie à soi pour vérif de distribution)
+    # BCC vers l’expéditeur (vérif de distribution)
     bcc_list = [sender] if bcc_me else []
 
-    # Envoi : support 465 (SSL) et 587 (STARTTLS)
+    # Envoi (465 SSL ou 587 STARTTLS)
     if int(cfg["port"]) == 465:
         import ssl
         with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
-            s.login(cfg["user"], cfg["password"])
+            s.login(cfg["user"], cfg["password"])      # ✅ dict, pas fonction
             refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
     else:
         with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
@@ -125,16 +169,10 @@ Pour <strong>{total_palettes}</strong> palettes.</p>
             s.login(cfg["user"], cfg["password"])
             refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
 
-    return refused  # {} si tout est accepté par le serveur SMTP
+    return refused  # {} si tout accepté par le serveur
 
-# ============================================================================#
-
-
-
-# ------------------------------------------------------------------
-# Réglages
-# ------------------------------------------------------------------
-INFO_CSV_PATH = "info_FDR.csv"   # ton CSV catalogue (Code-barre, Poids, ...)
+# ================================ Réglages ====================================
+INFO_CSV_PATH = "info_FDR.csv"
 TEMPLATE_XLSX_PATH = "assets/BL_enlevements_Sofripa.xlsx"
 
 DEST_TITLE = "SOFRIPA"
@@ -143,9 +181,7 @@ DEST_LINES = [
     "Rue Hélène Boucher, 91320 Wissous",
 ]
 
-# ------------------------------------------------------------------
-# Utils
-# ------------------------------------------------------------------
+# ================================ Utils =======================================
 def _today_paris() -> dt.date:
     return dt.datetime.now(gettz("Europe/Paris")).date()
 
@@ -184,10 +220,7 @@ def _format_from_stock(stock_txt: str) -> str | None:
 def _load_catalog(path: str) -> pd.DataFrame:
     """
     Lit info_FDR.csv et prépare colonnes auxiliaires pour le matching.
-    - normalise Poids (virgule -> point)
-    - prépare Format normalisé et formes canonisées de Produit/Désignation
     """
-    import pandas as pd, os, re
     if not os.path.exists(path):
         return pd.DataFrame(columns=["Produit","Format","Désignation","Code-barre","Poids"])
 
@@ -196,36 +229,25 @@ def _load_catalog(path: str) -> pd.DataFrame:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    # Poids: "7,23" -> "7.23" puis numeric
     if "Poids" in df.columns:
         df["Poids"] = (
-            df["Poids"]
-            .astype(str)
-            .str.replace(",", ".", regex=False)
+            df["Poids"].astype(str).str.replace(",", ".", regex=False)
         )
         df["Poids"] = pd.to_numeric(df["Poids"], errors="coerce")
 
-    # Format: "12x33cl" -> "12x33", "6x75cl" -> "6x75"
     df["_format_norm"] = df.get("Format","").astype(str).str.lower()
-    df["_format_norm"] = (
-        df["_format_norm"]
-        .str.replace("cl", "", regex=False)
-        .str.replace(" ", "", regex=False)
-    )
+    df["_format_norm"] = df["_format_norm"].str.replace("cl","", regex=False).str.replace(" ", "", regex=False)
 
-    # Canon pour Produit / Désignation
     df["_canon_prod"] = df.get("Produit","").map(_canon)
-    # on retire tout ce qui est entre parenthèses, puis canon
     df["_canon_des"]  = df.get("Désignation","").map(lambda s: _canon(re.sub(r"\(.*?\)", "", s)))
 
     return df
-
 
 def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple[str, float] | None:
     """
     Retourne (référence_6_chiffres, poids_carton) en matchant :
       - format (12x33 / 6x75 / 4x75)
-      - + goût canonisé (ex: 'mangue passion') contre Produit/Désignation du CSV
+      - + goût canonisé
     """
     if catalog is None or catalog.empty or not fmt_label:
         return None
@@ -233,23 +255,18 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
     fmt_norm = fmt_label.lower().replace("cl","").replace(" ", "")
     g_can = _canon(gout_canon)
 
-    # filtre format d'abord
     cand = catalog[catalog["_format_norm"].str.contains(fmt_norm, na=False)]
     if cand.empty:
         return None
 
-    # 1) match strict sur Produit canonisé
     m1 = cand[cand["_canon_prod"] == g_can]
     if m1.empty:
-        # 2) sinon, on vérifie que tous les tokens du goût sont dans la désignation canonisée
         toks = [t for t in g_can.split() if t]
         def _contains_all(s):
             s2 = str(s or "")
             return all(t in s2 for t in toks)
         m1 = cand[cand["_canon_des"].map(_contains_all)]
-
     if m1.empty:
-        # en dernier recours, on prend juste le premier du bon format
         m1 = cand
 
     row = m1.iloc[0]
@@ -258,21 +275,11 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
     poids = float(row.get("Poids") or 0.0)
     return (ref6, poids) if ref6 else None
 
-
-    row = cand.iloc[0]
-    code = re.sub(r"\D+", "", str(row.get("Code-barre","")))
-    ref6 = code[-6:] if len(code) >= 6 else code
-    poids = float(row.get("Poids") or 0.0)
-    return ref6, poids
-
-# ------------------------------------------------------------------
-# UI
-# ------------------------------------------------------------------
+# ================================== UI =======================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
 section("Fiche de ramasse", "🚚")
 
-# Besoin de la production sauvegardée depuis la page "Production"
-# --- Si aucune prod en mémoire volatile, proposer de charger depuis la mémoire longue
+# Besoin d'une production sauvegardée
 if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
     st.warning(
         "Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
@@ -281,7 +288,6 @@ if ("saved_production" not in st.session_state) or ("df_min" not in st.session_s
 
     saved = list_saved()
     if saved:
-        # Affiche un label lisible mais conserve le mapping vers le 'name' réel
         labels = [f"{it['name']} — ({it.get('semaine_du','?')})" for it in saved]
         sel = st.selectbox("Charger une proposition enregistrée", options=labels)
         if st.button("▶️ Charger cette proposition", use_container_width=True):
@@ -290,7 +296,7 @@ if ("saved_production" not in st.session_state) or ("df_min" not in st.session_s
             if sp_loaded and sp_loaded.get("df_min") is not None:
                 st.session_state["saved_production"] = sp_loaded
                 st.success(f"Chargé : {picked_name}")
-                st.rerun()  # relance la page pour exécuter la suite automatiquement
+                st.rerun()
             else:
                 st.error("Proposition invalide (df_min manquant).")
     st.stop()
@@ -300,7 +306,7 @@ sp = st.session_state["saved_production"]
 df_min_saved: pd.DataFrame = sp["df_min"].copy()
 ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
 
-# 1) Options dérivées de la prod sauvegardée (goût + format)
+# 1) Options (goût + format)
 opts_rows, seen = [], set()
 for _, r in df_min_saved.iterrows():
     gout = str(r.get("GoutCanon") or "").strip()
@@ -308,17 +314,10 @@ for _, r in df_min_saved.iterrows():
     if not (gout and fmt):
         continue
     key = (gout.lower(), fmt)
-    if key in seen:
-        continue
+    if key in seen: continue
     seen.add(key)
-    opts_rows.append({
-        "label": f"{gout} — {fmt}",
-        "gout": gout,
-        "format": fmt,
-        "prod_hint": str(r.get("Produit") or "").strip(),  # pour matcher le CSV
-    })
-
-
+    opts_rows.append({"label": f"{gout} — {fmt}", "gout": gout, "format": fmt,
+                      "prod_hint": str(r.get("Produit") or "").strip()})
 if not opts_rows:
     st.error("Impossible de détecter les **formats** (12x33, 6x75, 4x75) dans la production sauvegardée.")
     st.stop()
@@ -345,25 +344,21 @@ selection_labels = st.multiselect(
     options=opts_df["label"].tolist(),
     default=opts_df["label"].tolist(),
 )
-
 if not selection_labels:
     st.info("Sélectionne au moins un produit.")
     st.stop()
 
-# 5) Prépare la table éditable (Référence + Poids issus du CSV)
+# 5) Table éditable
 meta_by_label = {}
 rows = []
 for lab in selection_labels:
     row_opt = opts_df.loc[opts_df["label"] == lab].iloc[0]
-    gout     = row_opt["gout"]          # <-- on utilise le GOÛT canonisé
-    fmt      = row_opt["format"]
-
+    gout = row_opt["gout"]
+    fmt  = row_opt["format"]
     ref = ""; poids_carton = 0.0
-    lk = _csv_lookup(catalog, gout, fmt)  # <-- lookup par goût + format
-    if lk:
-        ref, poids_carton = lk
+    lk = _csv_lookup(catalog, gout, fmt)
+    if lk: ref, poids_carton = lk
     meta_by_label[lab] = {"_format": fmt, "_poids_carton": poids_carton, "_reference": ref}
-
     rows.append({
         "Référence": ref,
         "Produit (goût + format)": lab.replace(" — ", " - "),
@@ -372,29 +367,24 @@ for lab in selection_labels:
         "Quantité palettes": 0,
         "Poids palettes (kg)": 0,
     })
-
 display_cols = ["Référence","Produit (goût + format)","DDM","Quantité cartons","Quantité palettes","Poids palettes (kg)"]
 base_df = pd.DataFrame(rows, columns=display_cols)
 
 st.caption("Renseigne **Quantité cartons** et, si besoin, **Quantité palettes**. Le **poids** se calcule automatiquement (cartons × poids/carton du CSV).")
 edited = st.data_editor(
-    base_df,
-    key="ramasse_editor_xlsx_v1",
-    use_container_width=True,
-    hide_index=True,
+    base_df, key="ramasse_editor_xlsx_v1", use_container_width=True, hide_index=True,
     column_config={
-        "Quantité cartons":   st.column_config.NumberColumn(min_value=0, step=1),
-        "Quantité palettes":  st.column_config.NumberColumn(min_value=0, step=1),
+        "Quantité cartons":  st.column_config.NumberColumn(min_value=0, step=1),
+        "Quantité palettes": st.column_config.NumberColumn(min_value=0, step=1),
         "Poids palettes (kg)": st.column_config.NumberColumn(disabled=True, format="%.0f"),
     },
 )
 
-# 6) Calcul poids = cartons × poids/carton
+# 6) Calculs
 def _apply_calculs(df_disp: pd.DataFrame) -> pd.DataFrame:
     out = df_disp.copy()
     poids = []
     for _, r in out.iterrows():
-        # On retrouve la clé label côté meta, avec ou sans remplacement du tiret
         lab = str(r["Produit (goût + format)"]).replace(" - ", " — ")
         meta = meta_by_label.get(lab, meta_by_label.get(str(r["Produit (goût + format)"]), {}))
         pc = float(meta.get("_poids_carton", 0.0))
@@ -406,18 +396,17 @@ def _apply_calculs(df_disp: pd.DataFrame) -> pd.DataFrame:
 df_calc = _apply_calculs(edited)
 
 # KPIs
-tot_cartons = int(pd.to_numeric(df_calc["Quantité cartons"], errors="coerce").fillna(0).sum())
+tot_cartons  = int(pd.to_numeric(df_calc["Quantité cartons"], errors="coerce").fillna(0).sum())
 tot_palettes = int(pd.to_numeric(df_calc["Quantité palettes"], errors="coerce").fillna(0).sum())
-tot_poids = int(pd.to_numeric(df_calc["Poids palettes (kg)"], errors="coerce").fillna(0).sum())
+tot_poids    = int(pd.to_numeric(df_calc["Poids palettes (kg)"], errors="coerce").fillna(0).sum())
 
 c1, c2, c3 = st.columns(3)
 with c1: kpi("Total cartons", f"{tot_cartons:,}".replace(",", " "))
 with c2: kpi("Total palettes", f"{tot_palettes}")
 with c3: kpi("Poids total (kg)", f"{tot_poids:,}".replace(",", " "))
-
 st.dataframe(df_calc[display_cols], use_container_width=True, hide_index=True)
 
-# 7) Téléchargement XLSX (remplissage du modèle)
+# 7) Téléchargement XLSX
 st.markdown("---")
 if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_container_width=True, type="primary"):
     if tot_cartons <= 0:
@@ -445,13 +434,12 @@ if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_containe
         except Exception as e:
             st.error(f"Erreur lors du remplissage du modèle Excel : {e}")
 
-# 7-bis) Téléchargement PDF (rendu style Excel via fpdf2)
+# 7-bis) Téléchargement PDF
 if st.button("🧾 Télécharger la version PDF", use_container_width=True):
     if tot_cartons <= 0:
         st.error("Renseigne au moins une **Quantité cartons** > 0.")
     else:
         try:
-            # 1) Génère le PDF UNE SEULE FOIS
             pdf_bytes = build_bl_enlevements_pdf(
                 date_creation=_today_paris(),
                 date_ramasse=date_ramasse,
@@ -459,11 +447,7 @@ if st.button("🧾 Télécharger la version PDF", use_container_width=True):
                 destinataire_lines=DEST_LINES,
                 df_lines=df_calc[display_cols],
             )
-
-            # 2) Mémorise-le pour l'envoi par e-mail
             st.session_state["fiche_ramasse_pdf"] = pdf_bytes
-
-            # 3) Bouton de téléchargement
             st.download_button(
                 "📄 Télécharger la version PDF",
                 data=pdf_bytes,
@@ -474,47 +458,66 @@ if st.button("🧾 Télécharger la version PDF", use_container_width=True):
         except Exception as e:
             st.error(f"Erreur PDF : {e}")
 
-
-# === ENVOI PAR E-MAIL : à coller en bas de l'onglet Fiche de ramasse =========
-
-# 1) Trouver la colonne "palettes" et calculer le total
-PALETTE_COL_CANDIDATES = [
-    "Quantité palettes", "N° palettes", "Nb palettes", "Quantite palettes"
-]
+# ======================== ENVOI PAR E-MAIL ====================================
+# 1) Total palettes
+PALETTE_COL_CANDIDATES = ["Quantité palettes", "N° palettes", "Nb palettes", "Quantite palettes"]
 pal_col = next((c for c in PALETTE_COL_CANDIDATES if c in df_calc.columns), None)
 if pal_col is None:
-    st.error("Colonne des palettes introuvable dans df_calc. Renomme une des colonnes en "
-             + ", ".join(PALETTE_COL_CANDIDATES))
+    st.error("Colonne des palettes introuvable dans df_calc. Renomme une des colonnes en " + ", ".join(PALETTE_COL_CANDIDATES))
 else:
     total_palettes = int(pd.to_numeric(df_calc[pal_col], errors="coerce").fillna(0).sum())
 
-    # 2) Récupérer le PDF généré
+    # 2) Récup PDF
     pdf_bytes = st.session_state.get("fiche_ramasse_pdf")
     if pdf_bytes is None:
         st.info("Génère d’abord la version PDF (bouton de téléchargement) pour pouvoir l’envoyer par e-mail.")
 
-    # 3) UI destinataires + bouton d'envoi
-    # Pré-remplir depuis secrets (avec fallback)
+    # 3) UI destinataires (pré-rempli sans masquage ***)
     try:
         _cfg_preview = _get_email_cfg()
-        default_to  = ", ".join(_cfg_preview.get("recipients", []))
         sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
+        rec = _cfg_preview.get("recipients", [])
+        rec_str = rec if isinstance(rec, str) else ", ".join([x for x in rec if x])
     except RuntimeError as e:
-        default_to  = ""
         sender_hint = None
+        rec_str = ""
         st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
-    
+
+    _PREFILL = (rec_str or "") + "\u200b"   # anti-masquage Streamlit
+    if "ramasse_email_to" not in st.session_state:
+        st.session_state["ramasse_email_to"] = _PREFILL
+
     to_input = st.text_input(
         "Destinataires (séparés par des virgules)",
-        value=default_to,
-        placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr"
+        key="ramasse_email_to",
+        placeholder="ex: logistique@transporteur.com, expeditions@tonentreprise.fr",
     )
-    to_list = [x.strip() for x in to_input.split(",") if x.strip()]
-    
+
+    def _parse_emails(s: str):
+        return [e.strip() for e in (s or "").replace("\u200b","").split(",") if e.strip()]
+
+    to_list = _parse_emails(st.session_state.get("ramasse_email_to",""))
+
     if sender_hint:
         st.caption(f"Expéditeur utilisé : **{sender_hint}**")
 
+    # (Optionnel) Bouton de test auth SMTP
+    if st.button("🔌 Tester la connexion SMTP", use_container_width=True):
+        try:
+            cfg = _get_email_cfg()
+            if int(cfg["port"]) == 465:
+                import ssl
+                with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
+                    s.login(cfg["user"], cfg["password"])
+            else:
+                with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
+                    s.ehlo(); s.starttls(); s.ehlo()
+                    s.login(cfg["user"], cfg["password"])
+            st.success("Connexion SMTP OK : authentification acceptée ✅")
+        except Exception as e:
+            st.error(f"Échec d'authentification SMTP : {e}")
 
+    # Envoi
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
         if pdf_bytes is None:
             st.error("Le PDF n’est pas prêt. Clique d’abord sur « Télécharger la version PDF ».")
@@ -525,9 +528,9 @@ else:
                 filename = f"Fiche_de_ramasse_{date_ramasse.strftime('%Y%m%d')}.pdf"
                 size_mb = len(pdf_bytes) / (1024*1024)
                 st.caption(f"Taille PDF : {size_mb:.2f} Mo")
-    
-                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, bcc_me=True)
-    
+
+                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, date_ramasse, bcc_me=True)
+
                 st.write("Destinataires envoyés :", ", ".join(to_list))
                 if refused:
                     bad = ", ".join(f"{k} ({v[0]})" for k, v in refused.items())
@@ -537,6 +540,3 @@ else:
                                "Si le destinataire ne le voit pas, il est probablement en quarantaine/filtre.")
             except Exception as e:
                 st.error(f"Échec de l’envoi : {e}")
-
-
-# ============================================================================#
