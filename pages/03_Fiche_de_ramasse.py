@@ -107,7 +107,7 @@ Producteur de boissons fermentées
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
 <div style="font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111827">
   <div style="font-size:18px;font-weight:700">Ferment Station</div>
-  <div style="font-weight:700;color:#0f766e;margin-top:2px">Producteur de boissons fermentées</div>
+  <div style="font-weight:700;margin-top:2px">Producteur de boissons fermentées</div>
   <div style="margin-top:12px">26 Rue Robert Witchitz – 94200 Ivry-sur-Seine</div>
   <div><a href="tel:+33971227895" style="color:#2563eb;text-decoration:underline">09 71 22 78 95</a></div>
   <div style="margin-top:14px">
