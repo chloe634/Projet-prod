@@ -16,7 +16,6 @@ from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 import smtplib
 from email.message import EmailMessage
 from common.storage import list_saved, load_snapshot
-from email.utils import formataddr
 
 
 # === HELPERS EMAIL (robuste + fallback) =======================================
@@ -81,20 +80,9 @@ def _get_email_cfg():
     return cfg
 
 
-def send_mail_with_pdf(
-    pdf_bytes: bytes,
-    filename: str,
-    total_palettes: int,
-    to_list: list[str],
-    date_ramasse: dt.date,           # 👈 on passe la date pour l’objet
-    bcc_me: bool = True
-):
+def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str], bcc_me: bool = True):
     cfg = _get_email_cfg()
-    sender = cfg["sender"]          # doit être identique à cfg["user"]
-
-    # Nom d’expéditeur affiché (modifiable)
-    display_name = "Ferment Station – Logistique"
-    from_value = formataddr((display_name, sender))
+    sender = cfg["sender"]
 
     # Corps texte + HTML
     body_txt = f"""Bonjour,
@@ -110,14 +98,10 @@ Pour <strong>{total_palettes}</strong> palettes.</p>
 <p>Merci,<br>Bon après-midi.</p>"""
 
     msg = EmailMessage()
-    msg["Subject"] = f"Demande de ramasse — {date_ramasse:%d/%m/%Y} — Ferment Station"
-    msg["From"] = from_value
+    msg["Subject"] = "Demande de ramasse"
+    msg["From"] = sender
     msg["To"] = ", ".join(to_list)
     msg["Reply-To"] = sender
-    # En-têtes de priorité (surtout pris en compte par Outlook)
-    msg["X-Priority"] = "1"
-    msg["X-MSMail-Priority"] = "High"
-    msg["Importance"] = "High"
     msg["X-App-Trace"] = "ferment-station/fiche-ramasse"
 
     msg.set_content(body_txt)
@@ -126,7 +110,7 @@ Pour <strong>{total_palettes}</strong> palettes.</p>
     # PJ PDF
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
-    # BCC (copie à soi pour vérifier la distribution)
+    # BCC (copie à soi pour vérif de distribution)
     bcc_list = [sender] if bcc_me else []
 
     # Envoi : support 465 (SSL) et 587 (STARTTLS)
@@ -542,7 +526,7 @@ else:
                 size_mb = len(pdf_bytes) / (1024*1024)
                 st.caption(f"Taille PDF : {size_mb:.2f} Mo")
     
-                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, date_ramasse, bcc_me=True)
+                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, bcc_me=True)
     
                 st.write("Destinataires envoyés :", ", ".join(to_list))
                 if refused:
@@ -556,4 +540,3 @@ else:
 
 
 # ============================================================================#
-
