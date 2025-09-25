@@ -542,7 +542,7 @@ else:
                 size_mb = len(pdf_bytes) / (1024*1024)
                 st.caption(f"Taille PDF : {size_mb:.2f} Mo")
     
-                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, bcc_me=True)
+                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, date_ramasse, bcc_me=True)
     
                 st.write("Destinataires envoyés :", ", ".join(to_list))
                 if refused:
