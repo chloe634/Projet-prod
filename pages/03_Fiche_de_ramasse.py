@@ -133,7 +133,7 @@ Producteur de boissons fermentées
 
     # Images inline (CID) pour la signature
     INLINE_IMAGES = {
-        "symbiose": "assets/signature/logo_symbiose.png",
+        "symbiose": "assets/signature/logo_logo_logo_logo_logo_logo_symbiose.png",
         "niko":     "assets/signature/NIKO_Logo.png",
     }
     html_part = msg.get_payload()[-1]  # la partie HTML
