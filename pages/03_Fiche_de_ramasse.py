@@ -80,29 +80,53 @@ def _get_email_cfg():
     return cfg
 
 
-def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str]):
+def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str], bcc_me: bool = True):
     cfg = _get_email_cfg()
+    sender = cfg["sender"]
 
-    # Corps du mail demandé (XXX = total_palettes)
-    body = f"""Bonjour,
+    # Corps texte + HTML
+    body_txt = f"""Bonjour,
 
 Nous aurions besoin d’une ramasse pour demain.
 Pour {total_palettes} palettes.
 
 Merci,
 Bon après-midi."""
+    body_html = f"""<p>Bonjour,</p>
+<p>Nous aurions besoin d’une ramasse pour demain.<br>
+Pour <strong>{total_palettes}</strong> palettes.</p>
+<p>Merci,<br>Bon après-midi.</p>"""
 
     msg = EmailMessage()
     msg["Subject"] = "Demande de ramasse"
-    msg["From"] = cfg["sender"]
+    msg["From"] = sender
     msg["To"] = ", ".join(to_list)
-    msg.set_content(body)
+    msg["Reply-To"] = sender
+    msg["X-App-Trace"] = "ferment-station/fiche-ramasse"
+
+    msg.set_content(body_txt)
+    msg.add_alternative(body_html, subtype="html")
+
+    # PJ PDF
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
-    with smtplib.SMTP(cfg["host"], int(cfg["port"])) as smtp:
-        smtp.starttls()
-        smtp.login(cfg["user"], cfg["password"])
-        smtp.send_message(msg)
+    # BCC (copie à soi pour vérif de distribution)
+    bcc_list = [sender] if bcc_me else []
+
+    # Envoi : support 465 (SSL) et 587 (STARTTLS)
+    if int(cfg["port"]) == 465:
+        import ssl
+        with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
+            s.login(cfg["user"], cfg["password"])
+            refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
+    else:
+        with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
+            s.ehlo(); s.starttls(); s.ehlo()
+            s.login(cfg["user"], cfg["password"])
+            refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
+
+    return refused  # {} si tout est accepté par le serveur SMTP
+
 # ============================================================================#
 
 
@@ -499,10 +523,21 @@ else:
         else:
             try:
                 filename = f"Fiche_de_ramasse_{date_ramasse.strftime('%Y%m%d')}.pdf"
-                send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list)
-                st.success("E-mail envoyé ✅")
+                size_mb = len(pdf_bytes) / (1024*1024)
+                st.caption(f"Taille PDF : {size_mb:.2f} Mo")
+    
+                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, bcc_me=True)
+    
+                st.write("Destinataires envoyés :", ", ".join(to_list))
+                if refused:
+                    bad = ", ".join(f"{k} ({v[0]})" for k, v in refused.items())
+                    st.warning(f"E-mail refusé pour : {bad} — adresse ou politique du domaine.")
+                else:
+                    st.success("Serveur SMTP : OK ✅ — message remis au transport. "
+                               "Si le destinataire ne le voit pas, il est probablement en quarantaine/filtre.")
             except Exception as e:
                 st.error(f"Échec de l’envoi : {e}")
+
 
 # ============================================================================#
 
