@@ -16,6 +16,9 @@ from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 import smtplib
 from email.message import EmailMessage
 from common.storage import list_saved, load_snapshot
+from email.utils import formataddr
+import mimetypes, os
+
 
 
 # === HELPERS EMAIL (robuste + fallback) =======================================
@@ -80,11 +83,19 @@ def _get_email_cfg():
     return cfg
 
 
-def send_mail_with_pdf(pdf_bytes: bytes, filename: str, total_palettes: int, to_list: list[str], bcc_me: bool = True):
+def send_mail_with_pdf(
+    pdf_bytes: bytes,
+    filename: str,
+    total_palettes: int,
+    to_list: list[str],
+    date_ramasse: dt.date,          # on l’utilise dans l’objet
+    bcc_me: bool = True
+):
     cfg = _get_email_cfg()
-    sender = cfg["sender"]
+    sender = cfg["sender"]          # = cfg["user"]
+    from_value = formataddr(("Ferment Station – Logistique", sender))
 
-    # Corps texte + HTML
+    # Corps du mail (texte + HTML)
     body_txt = f"""Bonjour,
 
 Nous aurions besoin d’une ramasse pour demain.
@@ -97,27 +108,74 @@ Bon après-midi."""
 Pour <strong>{total_palettes}</strong> palettes.</p>
 <p>Merci,<br>Bon après-midi.</p>"""
 
+    # --- Signature (texte + HTML avec images inline) ---
+    SIG_TXT = """--
+Ferment Station
+Producteur de boissons fermentées
+26 Rue Robert Witchitz – 94200 Ivry-sur-Seine
+09 71 22 78 95"""
+
+    SIG_HTML = """
+<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+<div style="font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111827">
+  <div style="font-size:18px;font-weight:700">Ferment Station</div>
+  <div style="font-weight:700;color:#0f766e;margin-top:2px">Producteur de boissons fermentées</div>
+  <div style="margin-top:12px">26 Rue Robert Witchitz – 94200 Ivry-sur-Seine</div>
+  <div><a href="tel:+33971227895" style="color:#2563eb;text-decoration:underline">09 71 22 78 95</a></div>
+  <div style="margin-top:14px">
+    <img src="cid:symbiose" alt="Symbiose" height="36" style="vertical-align:middle;margin-right:14px;border:0">
+    <img src="cid:niko"     alt="Niko"     height="36" style="vertical-align:middle;border:0">
+  </div>
+</div>
+"""
+
+    # Message
     msg = EmailMessage()
-    msg["Subject"] = "Demande de ramasse"
-    msg["From"] = sender
+    msg["Subject"] = f"Demande de ramasse — {date_ramasse:%d/%m/%Y} — Ferment Station"
+    msg["From"] = from_value
     msg["To"] = ", ".join(to_list)
     msg["Reply-To"] = sender
+    msg["X-Priority"] = "1"              # surtout pour Outlook
+    msg["X-MSMail-Priority"] = "High"
+    msg["Importance"] = "High"
     msg["X-App-Trace"] = "ferment-station/fiche-ramasse"
 
-    msg.set_content(body_txt)
-    msg.add_alternative(body_html, subtype="html")
+    # Corps texte + signature
+    msg.set_content(body_txt + "\n\n" + SIG_TXT)
+    # Corps HTML + signature
+    msg.add_alternative(body_html + SIG_HTML, subtype="html")
+
+    # Images inline (CID) pour la signature
+    INLINE_IMAGES = {
+        "symbiose": "assets/signature/logo_symbiose.png",
+        "niko":     "assets/signature/NIKO_Logo.png",
+    }
+    html_part = msg.get_payload()[-1]  # la partie HTML
+    for cid, path in INLINE_IMAGES.items():
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                data = f.read()
+            mime, _ = mimetypes.guess_type(path)
+            maintype, subtype = (mime or "image/png").split("/", 1)
+            html_part.add_related(
+                data,
+                maintype=maintype,
+                subtype=subtype,
+                cid=f"<{cid}>",                     # référence via src="cid:xxx"
+                filename=os.path.basename(path),
+            )
 
     # PJ PDF
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
-    # BCC (copie à soi pour vérif de distribution)
+    # BCC (copie à soi)
     bcc_list = [sender] if bcc_me else []
 
-    # Envoi : support 465 (SSL) et 587 (STARTTLS)
+    # Envoi (465 SSL ou 587 STARTTLS)
     if int(cfg["port"]) == 465:
         import ssl
         with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
-            s.login(cfg["user"], cfg["password"])
+            s.login(cfg()["user"], cfg()["password"])
             refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
     else:
         with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
@@ -125,8 +183,7 @@ Pour <strong>{total_palettes}</strong> palettes.</p>
             s.login(cfg["user"], cfg["password"])
             refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
 
-    return refused  # {} si tout est accepté par le serveur SMTP
-
+    return refused  # {} si tout a été accepté par le serveur
 # ============================================================================#
 
 
