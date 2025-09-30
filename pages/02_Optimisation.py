@@ -11,7 +11,7 @@ from core.optimizer import (
 )
 
 from common.design import page_header, section
-page_header("📈", "Optimisation & pertes", "Fichier courant : autonomie-stocks.xlsx — Fenêtre : 91 jours — Prix moyen : €500/hL")
+page_header("📈", "Optimisation & pertes", "Fichier courant : autonomie-stocks.xlsx — Fenêtre : 91 jours — Prix moyen : 400€/hL")
 
 
 # Besoin du fichier en mémoire
