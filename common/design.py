@@ -262,6 +262,120 @@ def load_image_bytes(path: str):
             b64 = base64.b64encode(raw).decode("ascii")
             return f"data:{mime};base64,{b64}"
         except Exception:
+            return None    st.markdown(f'<div class="kpi"><div class="t">{title}</div><div class="v">{value}</div></div>', unsafe_allow_html=True)
+
+# ---------- Images helpers ----------
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+def slugify(s: str) -> str:
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
+    return s
+
+def find_image_path(images_dir: str, sku: str = None, flavor: str = None):
+    """
+    Ordre:
+      0) assets/image_map.csv (canonical -> filename). Si filename sans extension, on essaie .jpg/.jpeg/.png/.webp/.gif
+      1) Par SKU (CITR-33.ext puis CITR.ext)
+      2) Par slug du goût (ex: mangue-passion.ext)
+    """
+    import os, csv, unicodedata, re as _re
+
+    def _norm_key(s: str) -> str:
+        s = str(s or "")
+        s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+        s = _re.sub(r"\s+", " ", s).strip().lower()
+        return s
+
+    # 0) mapping CSV
+    map_csv = os.path.join(images_dir, "image_map.csv")
+    if os.path.exists(map_csv) and flavor:
+        for sep in (",", ";"):
+            try:
+                d = {}
+                with open(map_csv, "r", encoding="utf-8") as f:
+                    rdr = csv.DictReader(f, delimiter=sep)
+                    if not rdr.fieldnames:
+                        continue
+                    cols = {c.lower(): c for c in rdr.fieldnames}
+                    if "canonical" in cols and "filename" in cols:
+                        for row in rdr:
+                            cano = (row.get(cols["canonical"]) or "").strip()
+                            fn   = (row.get(cols["filename"])  or "").strip()
+                            if cano and fn:
+                                d[_norm_key(cano)] = fn
+                        break
+            except Exception:
+                pass
+        fn = d.get(_norm_key(flavor)) if 'd' in locals() else None
+        if fn:
+            p = os.path.join(images_dir, fn)
+            if os.path.splitext(fn)[1] == "":  # pas d'extension
+                for ext in IMG_EXTS:
+                    p_try = p + ext
+                    if os.path.exists(p_try):
+                        return p_try
+            if os.path.exists(p):
+                return p
+
+    # 1) SKU
+    if sku:
+        for ext in IMG_EXTS:
+            p = os.path.join(images_dir, f"{sku}{ext}")
+            if os.path.exists(p):
+                return p
+        base_root = _re.sub(r"-\d+$", "", sku)
+        for ext in IMG_EXTS:
+            p = os.path.join(images_dir, f"{base_root}{ext}")
+            if os.path.exists(p):
+                return p
+
+    # 2) slug du goût
+    if flavor:
+        from .design import slugify  # si slugify est dans ce fichier, sinon adapte
+        s = slugify(flavor)
+        for ext in IMG_EXTS:
+            p = os.path.join(images_dir, f"{s}{ext}")
+            if os.path.exists(p):
+                return p
+
+    return None
+
+
+import os, base64
+from io import BytesIO
+from PIL import Image
+
+import os, base64
+from io import BytesIO
+from PIL import Image
+
+def load_image_bytes(path: str):
+    """
+    Retourne :
+    - bytes PNG (préféré)
+    - ou data-URL base64 (fallback)
+    """
+    if not path or not os.path.exists(path):
+        return None
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        im = Image.open(path).convert("RGBA")
+        buf = BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            mime = {
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+            }.get(ext, "image/octet-stream")
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except Exception:
             return None
 # --- UI helpers (ajouts) ---
 import streamlit as st
