@@ -55,10 +55,9 @@ with colB:
     total = float(pertes["Perte (€)"].sum()) if isinstance(pertes, pd.DataFrame) and not pertes.empty else 0.0
     kpi("Perte totale (7 j)", f"€{total:,.0f}")
     st.caption(
-    f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — "
-    f"Fenêtre (B2) : **{window_days} jours** — "
-    f"Prix moyen : **€{price_hL:.0f}/hL**"
-)
+        f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — "
+        f"Fenêtre (B2) : **{window_days} jours**"
+    )
 
 # ---- Calculs ----
 fm = load_flavor_map_from_path(flavor_map)
