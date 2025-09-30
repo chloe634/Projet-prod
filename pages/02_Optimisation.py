@@ -53,6 +53,25 @@ with colA:
 
 with colB:
     total = float(pertes["Perte (€)"].sum()) if isinstance(pertes, pd.DataFrame) and not pertes.empty else 0.0
+    kpi("Perte totale (7 j)", f"€{total:,.0f}")    f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — "
+    f"Fenêtre (B2) : **{window_days} jours** — "
+    f"Prix moyen : **€{price_hL:.0f}/hL**"
+)
+
+# ---- Calculs ----
+fm = load_flavor_map_from_path(flavor_map)
+df_in = apply_canonical_flavor(df_raw, fm)
+pertes = compute_losses_table_v48(df_in, window_days, price_hL)
+
+colA, colB = st.columns([2, 1])
+with colA:
+    if isinstance(pertes, pd.DataFrame) and not pertes.empty:
+        st.dataframe(pertes, use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune perte estimée sur 7 jours (données insuffisantes ou stock suffisant).")
+
+with colB:
+    total = float(pertes["Perte (€)"].sum()) if isinstance(pertes, pd.DataFrame) and not pertes.empty else 0.0
     kpi("Perte totale (7 j)", f"€{total:,.0f}")
     st.caption(
         f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — "
