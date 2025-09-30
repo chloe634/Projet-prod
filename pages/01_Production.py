@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 from dateutil.relativedelta import relativedelta
 
-from common.design import apply_theme, section, kpi, find_image_path, load_image_bytes
 from common.data import get_paths
 from core.optimizer import (
     load_flavor_map_from_path,
