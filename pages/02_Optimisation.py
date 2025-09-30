@@ -56,7 +56,7 @@ with colB:
     kpi("Perte totale (7 j)", f"€{total:,.0f}")    f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — "
     f"Fenêtre (B2) : **{window_days} jours** — "
     f"Prix moyen : **€{price_hL:.0f}/hL**"
-)
+
 
 # ---- Calculs ----
 fm = load_flavor_map_from_path(flavor_map)
