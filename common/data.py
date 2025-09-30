@@ -1,21 +1,5 @@
 import os, yaml, pandas as pd
 from functools import lru_cache
-from pathlib import Path
-from PIL import Image
-import streamlit as st
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_ASSETS = _REPO_ROOT / "assets"
-
-def asset_path(rel: str) -> str:
-    p = (_ASSETS / rel).resolve()
-    if not p.exists():
-        return str((_REPO_ROOT / rel).resolve())
-    return str(p)
-
-@st.cache_data(show_spinner=False)
-def load_image(rel: str):
-    return Image.open(asset_path(rel))
 
 CONFIG_DEFAULT = {
     "data_files": {
