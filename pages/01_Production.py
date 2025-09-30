@@ -324,8 +324,9 @@ if saved_list:
     with col_count:
         st.metric("Propositions stockées", f"{len(saved_list)}/{MAX_SLOTS}")
 else:
-    st.info("Aucune proposition enregistrée pour l’instant.")df_in_raw = st.session_state.df_raw
-window_days = st.session_state.window_days
+    st.info("Aucune proposition enregistrée pour l’instant.")
+    df_in_raw = st.session_state.df_raw
+    window_days = st.session_state.window_days
 
 # ---------------- Préparation des données ----------------
 fm = load_flavor_map_from_path(flavor_map)
