@@ -10,8 +10,9 @@ from core.optimizer import (
     compute_losses_table_v48,
 )
 
-apply_theme("Optimisation & pertes — Ferment Station", "📉")
-section("Optimisation & pertes", "📉")
+from common.design import page_header, section
+page_header("📈", "Optimisation & pertes", "Fichier courant : autonomie-stocks.xlsx — Fenêtre : 91 jours — Prix moyen : €500/hL")
+
 
 # Besoin du fichier en mémoire
 if "df_raw" not in st.session_state or "window_days" not in st.session_state:
