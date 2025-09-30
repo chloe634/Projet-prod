@@ -4,6 +4,8 @@ import re
 import datetime as _dt
 import pandas as pd
 import streamlit as st
+from common.design import page_header, kpi_card, section
+
 from dateutil.relativedelta import relativedelta
 
 from common.design import apply_theme, section, kpi, find_image_path, load_image_bytes
@@ -24,7 +26,8 @@ SHEET_NAME = None
 
 # ---------------- UI header ----------------
 apply_theme("Production — Ferment Station", "📦")
-section("Tableau de production", "📦")
+page_header("📦", "Tableau de production", "Fichier courant : autonomie-stocks.xlsx — Fenêtre : 91 jours")
+
 
 # ---------------- Pré-requis : fichier chargé sur Accueil ----------------
 if "df_raw" not in st.session_state or "window_days" not in st.session_state:
@@ -104,12 +107,16 @@ if isinstance(note_msg, str) and note_msg.strip():
 
 
 # ---------------- KPIs ----------------
-total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum()) if "Bouteilles à produire (arrondi)" in df_min.columns else 0
-total_vol = float(pd.to_numeric(df_min.get("Volume produit arrondi (hL)"), errors="coerce").fillna(0).sum()) if "Volume produit arrondi (hL)" in df_min.columns else 0.0
+# EXEMPLE — remplace les valeurs par tes variables :
+total_bouteilles = f"{int(total_bouteilles_a_produire):,}".replace(",", " ")
+volume_hl = f"{volume_total_hl:.2f}"
+nb_gouts = f"{int(nb_gouts_selectionnes)}"
+
 c1, c2, c3 = st.columns(3)
-with c1: kpi("Total bouteilles à produire", f"{total_btl:,}".replace(",", " "))
-with c2: kpi("Volume total (hL)", f"{total_vol:.2f}")
-with c3: kpi("Goûts sélectionnés", f"{len(gouts_cibles)}")
+with c1: kpi_card("Total bouteilles à produire", total_bouteilles)
+with c2: kpi_card("Volume total (hL)", volume_hl)
+with c3: kpi_card("Goûts sélectionnés", nb_gouts)
+
 
 # ---------------- Images + tableau principal ----------------
 def sku_guess(name: str):
