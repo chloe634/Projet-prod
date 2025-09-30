@@ -149,3 +149,40 @@ def load_image_bytes(path: str):
             return f"data:{mime};base64,{b64}"
         except Exception:
             return None
+# --- UI helpers (ajouts) ---
+import streamlit as st
+from textwrap import dedent
+
+def page_header(emoji: str, title: str, subtitle: str=""):
+    st.markdown(f"""
+    <div style="display:flex; gap:12px; align-items:center; margin:6px 0 18px;">
+      <div style="font-size:28px;">{emoji}</div>
+      <div>
+        <div style="font-size:26px; font-weight:700; line-height:1.1;">{title}</div>
+        {f'<div style="opacity:.7; margin-top:2px;">{subtitle}</div>' if subtitle else ''}
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def kpi_card(label: str, value: str, help_text: str=""):
+    st.markdown(dedent(f"""
+    <div style="
+      background: var(--secondary-background-color);
+      border:1px solid #dbe7e1; border-radius:14px; padding:16px 18px; 
+      box-shadow: 0 1px 0 rgba(0,0,0,.03);
+      ">
+      <div style="font-size:13px; opacity:.75; margin-bottom:6px;">{label}</div>
+      <div style="font-size:28px; font-weight:800;">{value}</div>
+      {f'<div style="font-size:12px; opacity:.6; margin-top:4px;">{help_text}</div>' if help_text else ''}
+    </div>
+    """), unsafe_allow_html=True)
+
+def section(title: str, emoji: str=""):
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; gap:8px; 
+                margin:28px 0 10px; padding:8px 12px; 
+                background:#EAF2EE; border-left:4px solid #1E6F5C; border-radius:8px;">
+      <div style="font-size:18px;">{emoji}</div>
+      <div style="font-weight:700;">{title}</div>
+    </div>
+    """, unsafe_allow_html=True)
