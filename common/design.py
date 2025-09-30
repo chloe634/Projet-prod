@@ -300,3 +300,52 @@ def section(title: str, emoji: str=""):
       <div style="font-weight:700;">{title}</div>
     </div>
     """, unsafe_allow_html=True)
+
+# ---------- Hotfix stubs pour compatibilité ----------
+import streamlit as st
+from pathlib import Path
+
+def apply_theme(title: str = "", emoji: str | None = None):
+    """
+    Compat: certaines pages appelaient apply_theme(title, emoji).
+    On fixe juste le header de page pour éviter NameError.
+    """
+    try:
+        st.set_page_config(page_title=title or "App", page_icon=emoji or "")
+    except Exception:
+        # set_page_config ne doit être appelé qu'une fois, on ignore si déjà fait
+        pass
+    if title:
+        st.title(f"{emoji+' ' if emoji else ''}{title}")
+
+def section(title: str, emoji: str = ""):
+    """Compat: remplace l'ancien helper par un simple sous-titre."""
+    st.subheader(f"{emoji+' ' if emoji else ''}{title}")
+
+def kpi(label: str, value: str, help_text: str = ""):
+    """
+    Compat: wrapper simple autour de st.metric + caption optionnelle.
+    """
+    st.metric(label, value)
+    if help_text:
+        st.caption(help_text)
+
+def find_image_path(rel: str) -> str:
+    """
+    Compat: certaines pages importaient find_image_path.
+    Renvoie un chemin absolu vers /assets/<rel> si présent, sinon rel.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    p = (repo_root / "assets" / rel).resolve()
+    return str(p if p.exists() else (repo_root / rel))
+
+def load_image_bytes(rel: str) -> bytes:
+    """
+    Compat: wrapper très permissif pour lire un fichier image.
+    """
+    try:
+        return Path(find_image_path(rel)).read_bytes()
+    except Exception:
+        return b""
+# -----------------------------------------------------
+
