@@ -554,7 +554,7 @@ else:
             except Exception as e:
                 st.error(f"Échec de l’envoi : {e}")    
                     if "email" in st.secrets:
-                        return dict(st.secrets.get("email", {}))
+            return dict(st.secrets.get("email", {}))
 
     try:
         proj_root = Path(__file__).resolve().parents[1]
