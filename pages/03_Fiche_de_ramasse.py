@@ -552,8 +552,9 @@ else:
                     st.success("Serveur SMTP : OK ✅ — message remis au transport. "
                                "Si le destinataire ne le voit pas, il est probablement en quarantaine/filtre.")
             except Exception as e:
-                st.error(f"Échec de l’envoi : {e}")    if "email" in st.secrets:
-        return dict(st.secrets.get("email", {}))
+                st.error(f"Échec de l’envoi : {e}")    
+                    if "email" in st.secrets:
+                        return dict(st.secrets.get("email", {}))
 
     try:
         proj_root = Path(__file__).resolve().parents[1]
