@@ -289,8 +289,10 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
     return (ref6, poids) if ref6 else None
 
 # ================================== UI =======================================
-apply_theme("Fiche de ramasse — Ferment Station", "🚚")
-section("Fiche de ramasse", "🚚")
+from common.design import page_header, section
+page_header("🚚", "Fiche de ramasse")
+section("Sélection des produits", "🧺")
+
 
 # Besoin d'une production sauvegardée
 if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
