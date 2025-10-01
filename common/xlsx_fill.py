@@ -12,6 +12,32 @@ from dateutil.relativedelta import relativedelta
 import pandas as pd
 import openpyxl
 from openpyxl.utils import coordinate_to_tuple, get_column_letter
+from pathlib import Path
+import io, os
+from reportlab.lib.utils import ImageReader  # <-- si tu utilises ReportLab
+
+
+def _project_root() -> Path:
+    """Racine du projet (= dossier parent de 'common')."""
+    try:
+        return Path(__file__).resolve().parents[1]
+    except Exception:
+        return Path(os.getcwd())
+
+def _load_asset_bytes(rel_path: str) -> bytes | None:
+    """
+    Charge un fichier d'assets en bytes, peu importe le cwd.
+    Essaie <racine>/<rel_path> puis <rel_path> si déjà absolu.
+    """
+    root = _project_root()
+    candidates = [root / rel_path, Path(rel_path)]
+    for p in candidates:
+        try:
+            if p.exists() and p.is_file():
+                return p.read_bytes()
+        except Exception:
+            pass
+    return None
 
 # ======================================================================
 #                         Utilitaires généraux
@@ -403,13 +429,13 @@ def build_bl_enlevements_pdf(
     destinataire_lines: List[str],
     df_lines: pd.DataFrame,
     *,
-    logo_path: str | None = "assets/logo_symbiose.png",
+    # ⬇️ par défaut, on pointe vers ton vrai fichier déjà présent dans le repo
+    logo_path: str | None = "assets/signature/logo_symbiose.png",
     issuer_name: str = "FERMENT STATION",
     issuer_lines: List[str] | None = None,
     issuer_footer: str | None = "Produits issus de l'Agriculture Biologique certifié par FR-BIO-01",
 ) -> bytes:
     """PDF BL au look Excel : encadré, tableau gris, totaux. (Helvetica/latin-1)."""
-    import os
     from fpdf import FPDF
 
     # ---------- helpers texte latin-1 ----------
@@ -444,11 +470,13 @@ def build_bl_enlevements_pdf(
 
     # ---- Logo + coordonnées expéditeur
     y = 18
-    if logo_path and os.path.exists(logo_path):
-        pdf.image(logo_path, x=left, y=y - 2, w=28)
-        x_text = left + 34
-    else:
-        x_text = left
+    x_text = left
+    if logo_path:
+        img_bytes = _load_asset_bytes(logo_path)  # ⬅️ robuste: on charge en bytes depuis la racine du projet
+        if img_bytes:
+            bio = io.BytesIO(img_bytes)
+            pdf.image(bio, x=left, y=y - 2, w=28)  # ajuste w si besoin
+            x_text = left + 34  # texte à droite du logo
 
     pdf.set_xy(x_text, y)
     pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 6, _txt(issuer_name), ln=1)
@@ -499,22 +527,12 @@ def build_bl_enlevements_pdf(
     pdf.ln(6)
     pdf.set_fill_color(230, 230, 230)
 
-    headers = [
-        "Référence",
-        "Produit",
-        "DDM",
-        "Nb cartons",
-        "Nb palettes",
-        "Poids (kg)",
-    ]
-
-    # Largeurs (somme 180) — Référence & DDM élargies
+    headers = ["Référence", "Produit", "DDM", "Nb cartons", "Nb palettes", "Poids (kg)"]
     widths_base = [30, 66, 26, 24, 22, 12]
     widths = widths_base[:]
     header_h = 8
     line_h = 6
 
-    # Auto-ajustement des titres sur 1 ligne
     pdf.set_font("Helvetica", "B", 10)
     margin_mm = 2.5
     min_w = {0: 30.0, 1: 58.0, 2: 26.0, 3: 22.0, 4: 20.0, 5: 18.0}
@@ -538,7 +556,7 @@ def build_bl_enlevements_pdf(
             d = min(free, overflow)
             widths[j] -= d; overflow -= d
 
-    # En-tête (1 ligne)
+    # En-tête
     x = left; y = pdf.get_y()
     for h, w in zip(headers, widths):
         pdf.set_xy(x, y); pdf.cell(w, header_h, _txt(h), border=1, align="C", fill=True); x += w
