@@ -383,13 +383,6 @@ sp = st.session_state["saved_production"]
 df_min_saved: pd.DataFrame = sp["df_min"].copy()
 ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
 
-# Choix de la source (place-le tout de suite après section(...))
-source_mode = st.radio(
-    "Source des produits pour la fiche",
-    options=["Proposition sauvegardée", "Sélection manuelle"],
-    horizontal=True,
-    key="ramasse_source_mode"
-)
 
 # Charger le catalogue tôt (utilisé en manuel et pour lookup)
 catalog = _load_catalog(INFO_CSV_PATH)
