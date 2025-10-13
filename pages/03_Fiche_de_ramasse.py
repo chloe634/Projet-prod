@@ -431,8 +431,6 @@ if opts_df.empty:
     st.error("Aucun produit détecté pour ce mode (vérifie `info_FDR.csv` en manuel).")
     st.stop()
 
-opts_df = pd.DataFrame(opts_rows).sort_values(by="label").reset_index(drop=True)
-
 # 2) Catalogue CSV
 catalog = _load_catalog(INFO_CSV_PATH)
 if catalog.empty:
