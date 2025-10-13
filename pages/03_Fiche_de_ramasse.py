@@ -288,30 +288,104 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
     poids = float(row.get("Poids") or 0.0)
     return (ref6, poids) if ref6 else None
 
+def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
+    opts_rows, seen = [], set()
+    for _, r in df_min_saved.iterrows():
+        gout = str(r.get("GoutCanon") or "").strip()
+        fmt  = _format_from_stock(r.get("Stock"))
+        if not (gout and fmt):
+            continue
+        key = (gout.lower(), fmt)
+        if key in seen:
+            continue
+        seen.add(key)
+        opts_rows.append({
+            "label": f"{gout} — {fmt}",
+            "gout": gout,
+            "format": fmt,
+            "prod_hint": str(r.get("Produit") or "").strip()
+        })
+    return pd.DataFrame(opts_rows).sort_values(by="label").reset_index(drop=True)
+
+def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    if catalog is None or catalog.empty:
+        return pd.DataFrame(columns=["label","gout","format","prod_hint"])
+    rows, seen = [], set()
+    for _, r in catalog.iterrows():
+        gout = str(r.get("Produit","")).strip()
+        fmt  = str(r.get("Format","")).strip()
+        if not (gout and fmt):
+            continue
+        key = (gout.lower(), fmt)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "label": f"{gout} — {fmt}",
+            "gout": gout,
+            "format": fmt,
+            "prod_hint": str(r.get("Désignation","")).strip()
+        })
+    return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
+
+
 # ================================== UI =======================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
 section("Fiche de ramasse", "🚚")
 
-# Besoin d'une production sauvegardée
-if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
-    st.warning(
-        "Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
-        "ou charge une proposition depuis la mémoire longue ci-dessous."
-    )
+# NEW — choix de la source des produits
+source_mode = st.radio(
+    "Source des produits pour la fiche",
+    options=["Proposition sauvegardée", "Sélection manuelle"],
+    horizontal=True
+)
 
-    saved = list_saved()
-    if saved:
-        labels = [f"{it['name']} — ({it.get('semaine_du','?')})" for it in saved]
-        sel = st.selectbox("Charger une proposition enregistrée", options=labels)
-        if st.button("▶️ Charger cette proposition", use_container_width=True):
-            picked_name = saved[labels.index(sel)]["name"]
-            sp_loaded = load_snapshot(picked_name)
-            if sp_loaded and sp_loaded.get("df_min") is not None:
-                st.session_state["saved_production"] = sp_loaded
-                st.success(f"Chargé : {picked_name}")
-                st.rerun()
-            else:
-                st.error("Proposition invalide (df_min manquant).")
+# 2) Catalogue CSV (on le charge tôt car utile en manuel et pour lookup)
+catalog = _load_catalog(INFO_CSV_PATH)
+if catalog.empty:
+    st.warning("⚠️ `info_FDR.csv` introuvable ou vide — références/poids non calculables.")
+
+# === Proposition sauvegardée requise uniquement si on est sur ce mode ===
+if source_mode == "Proposition sauvegardée":
+    if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
+        st.warning(
+            "Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
+            "ou charge une proposition depuis la mémoire longue ci-dessous."
+        )
+
+        saved = list_saved()
+        if saved:
+            labels = [f"{it['name']} — ({it.get('semaine_du','?')})" for it in saved]
+            sel = st.selectbox("Charger une proposition enregistrée", options=labels)
+            if st.button("▶️ Charger cette proposition", use_container_width=True):
+                picked_name = saved[labels.index(sel)]["name"]
+                sp_loaded = load_snapshot(picked_name)
+                if sp_loaded and sp_loaded.get("df_min") is not None:
+                    st.session_state["saved_production"] = sp_loaded
+                    st.success(f"Chargé : {picked_name}")
+                    st.rerun()
+                else:
+                    st.error("Proposition invalide (df_min manquant).")
+        st.stop()
+
+# === À partir d’ici :
+# - en mode Proposition, on a une prod en session
+# - en mode Manuel, on n’en a potentiellement pas (et ce n’est pas bloquant)
+if source_mode == "Proposition sauvegardée":
+    sp = st.session_state["saved_production"]
+    df_min_saved: pd.DataFrame = sp["df_min"].copy()
+    ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
+    opts_df = _build_opts_from_saved(df_min_saved)
+else:
+    df_min_saved = None
+    ddm_saved = _today_paris()  # NEW — valeur par défaut si pas de prod
+    opts_df = _build_opts_from_catalog(catalog)
+
+if opts_df.empty:
+    if source_mode == "Proposition sauvegardée":
+        st.error("Impossible de détecter les **formats** (12x33, 6x75, 4x75) dans la production sauvegardée.")
+    else:
+        st.error("Aucun produit détecté dans `info_FDR.csv` (colonnes « Produit » et « Format » requises).")
     st.stop()
 
 # === À partir d’ici on a bien une prod en session ===
@@ -355,11 +429,8 @@ st.subheader("Sélection des produits")
 selection_labels = st.multiselect(
     "Produits à inclure (Goût — Format)",
     options=opts_df["label"].tolist(),
-    default=opts_df["label"].tolist(),
+    default=opts_df["label"].tolist() if source_mode == "Proposition sauvegardée" else [],
 )
-if not selection_labels:
-    st.info("Sélectionne au moins un produit.")
-    st.stop()
 
 # 5) Table éditable
 meta_by_label = {}
