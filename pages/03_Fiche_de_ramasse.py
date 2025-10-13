@@ -398,9 +398,9 @@ with st.sidebar:
     st.header("Paramètres")
     date_creation = _today_paris()
     date_ramasse = st.date_input("Date de ramasse", value=date_creation)
-    if st.button("🔄 Recharger le catalogue"):
-        _load_catalog.clear()  # vide le cache de @st.cache_data
-        st.experimental_rerun()
+    if st.button("🔄 Recharger le catalogue", use_container_width=True):
+        _load_catalog.clear()   # vide le cache de @st.cache_data
+        st.rerun()              # relance proprement
     # DDM selon le mode
     if source_mode == "Sélection manuelle":
         ddm_manual = st.date_input("DDM par défaut (manuel)", value=_today_paris())
