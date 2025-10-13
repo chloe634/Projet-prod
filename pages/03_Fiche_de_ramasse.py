@@ -323,26 +323,28 @@ def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
 section("Fiche de ramasse", "🚚")
 
-# NEW — choix de la source des produits
+# 0) Choix de la source (un seul radio)
 source_mode = st.radio(
     "Source des produits pour la fiche",
     options=["Proposition sauvegardée", "Sélection manuelle"],
-    horizontal=True
+    horizontal=True,
+    key="ramasse_source_mode",
 )
 
-# 2) Catalogue CSV (on le charge tôt car utile en manuel et pour lookup)
+# 1) Charger le catalogue (utile en manuel et pour les références/poids)
 catalog = _load_catalog(INFO_CSV_PATH)
 if catalog.empty:
     st.warning("⚠️ `info_FDR.csv` introuvable ou vide — références/poids non calculables.")
 
-# === Proposition sauvegardée requise uniquement si on est sur ce mode ===
+# 2) Construire la liste des produits selon le mode
 if source_mode == "Proposition sauvegardée":
-    if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
+    # ✅ ne pas lever KeyError si la prod n'est pas en session
+    sp = st.session_state.get("saved_production")
+    if not sp or "df_min" not in sp:
         st.warning(
             "Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
             "ou charge une proposition depuis la mémoire longue ci-dessous."
         )
-
         saved = list_saved()
         if saved:
             labels = [f"{it['name']} — ({it.get('semaine_du','?')})" for it in saved]
@@ -358,76 +360,21 @@ if source_mode == "Proposition sauvegardée":
                     st.error("Proposition invalide (df_min manquant).")
         st.stop()
 
-# === À partir d’ici :
-# - en mode Proposition, on a une prod en session
-# - en mode Manuel, on n’en a potentiellement pas (et ce n’est pas bloquant)
-if source_mode == "Proposition sauvegardée":
-    sp = st.session_state["saved_production"]
+    # Ici, on est sûr d'avoir une prod en session
     df_min_saved: pd.DataFrame = sp["df_min"].copy()
     ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
+    # ➜ construit les options depuis la proposition (helper ajouté plus haut)
     opts_df = _build_opts_from_saved(df_min_saved)
-else:
+
+else:  # "Sélection manuelle"
     df_min_saved = None
-    ddm_saved = _today_paris()  # NEW — valeur par défaut si pas de prod
-    opts_df = _build_opts_from_catalog(catalog)
-
-if opts_df.empty:
-    if source_mode == "Proposition sauvegardée":
-        st.error("Impossible de détecter les **formats** (12x33, 6x75, 4x75) dans la production sauvegardée.")
-    else:
-        st.error("Aucun produit détecté dans `info_FDR.csv` (colonnes « Produit » et « Format » requises).")
-    st.stop()
-
-# === À partir d’ici on a bien une prod en session ===
-sp = st.session_state["saved_production"]
-df_min_saved: pd.DataFrame = sp["df_min"].copy()
-ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
-
-
-# Charger le catalogue tôt (utilisé en manuel et pour lookup)
-catalog = _load_catalog(INFO_CSV_PATH)
-if catalog.empty:
-    st.warning("⚠️ `info_FDR.csv` introuvable ou vide — références/poids non calculables.")
-
-# Si 'Proposition sauvegardée' => on exige la prod, sinon on n’arrête pas le flux
-if source_mode == "Proposition sauvegardée":
-    if ("saved_production" not in st.session_state) or ("df_min" not in st.session_state.get("saved_production", {})):
-        st.warning("Va d’abord dans **Production** et clique **💾 Sauvegarder cette production** "
-                   "ou charge une proposition depuis la mémoire longue ci-dessous.")
-        saved = list_saved()
-        if saved:
-            labels = [f"{it['name']} — ({it.get('semaine_du','?')})" for it in saved]
-            sel = st.selectbox("Charger une proposition enregistrée", options=labels)
-            if st.button("▶️ Charger cette proposition", use_container_width=True):
-                picked_name = saved[labels.index(sel)]["name"]
-                sp_loaded = load_snapshot(picked_name)
-                if sp_loaded and sp_loaded.get("df_min") is not None:
-                    st.session_state["saved_production"] = sp_loaded
-                    st.success(f"Chargé : {picked_name}")
-                    st.rerun()
-                else:
-                    st.error("Proposition invalide (df_min manquant).")
-        st.stop()
-
-# Construire opts_df selon le mode
-if source_mode == "Proposition sauvegardée":
-    sp = st.session_state["saved_production"]
-    df_min_saved: pd.DataFrame = sp["df_min"].copy()
-    ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
-    opts_df = _build_opts_from_saved(df_min_saved)
-else:
-    df_min_saved = None
-    ddm_saved = _today_paris()
+    ddm_saved = _today_paris()  # valeur par défaut pour la DDM si tu ne l'édites pas ensuite
+    # ➜ construit les options depuis le CSV (tous les goûts + formats)
     opts_df = _build_opts_from_catalog(catalog)
 
 if opts_df.empty:
     st.error("Aucun produit détecté pour ce mode (vérifie `info_FDR.csv` en manuel).")
     st.stop()
-
-# 2) Catalogue CSV
-catalog = _load_catalog(INFO_CSV_PATH)
-if catalog.empty:
-    st.warning("⚠️ `info_FDR.csv` introuvable ou vide — références/poids non calculables.")
 
 # 3) Sidebar : dates
 with st.sidebar:
