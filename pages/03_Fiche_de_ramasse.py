@@ -483,42 +483,6 @@ with c2: kpi("Total palettes", f"{tot_palettes}")
 with c3: kpi("Poids total (kg)", f"{tot_poids:,}".replace(",", " "))
 st.dataframe(df_calc[display_cols], use_container_width=True, hide_index=True)
 
-# 7) Téléchargement XLSX
-st.markdown("---")
-if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_container_width=True, type="primary"):
-    if tot_cartons <= 0:
-        st.error("Renseigne au moins une **Quantité cartons** > 0.")
-    elif not os.path.exists(TEMPLATE_XLSX_PATH):
-        st.error(f"Modèle Excel introuvable : `{TEMPLATE_XLSX_PATH}`")
-    else:
-        try:
-            # --- Conversion DDM pour export (⚠️ garde l'indentation sous 'try:') ---
-            df_for_export = df_calc[display_cols].copy()
-            if not pd.api.types.is_string_dtype(df_for_export["DDM"]):
-                df_for_export["DDM"] = df_for_export["DDM"].apply(
-                    lambda d: d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d)
-                )
-            # -----------------------------------------------------------------------
-
-            xlsx_bytes = fill_bl_enlevements_xlsx(
-                template_path=TEMPLATE_XLSX_PATH,
-                date_creation=_today_paris(),
-                date_ramasse=date_ramasse,
-                destinataire_title=DEST_TITLE,
-                destinataire_lines=DEST_LINES,
-                df_lines=df_for_export,  # ← on envoie df_for_export
-            )
-            fname = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.xlsx"
-            st.download_button(
-                "⬇️ Télécharger le XLSX",
-                data=xlsx_bytes,
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        except Exception as e:
-            st.error(f"Erreur lors du remplissage du modèle Excel : {e}")
-
 # 7-bis) Téléchargement PDF
 if st.button("🧾 Télécharger la version PDF", use_container_width=True):
     if tot_cartons <= 0:
@@ -593,22 +557,6 @@ else:
 
     if sender_hint:
         st.caption(f"Expéditeur utilisé : **{sender_hint}**")
-
-    # (Optionnel) Bouton de test auth SMTP
-    if st.button("🔌 Tester la connexion SMTP", use_container_width=True):
-        try:
-            cfg = _get_email_cfg()
-            if int(cfg["port"]) == 465:
-                import ssl
-                with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
-                    s.login(cfg["user"], cfg["password"])
-            else:
-                with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
-                    s.ehlo(); s.starttls(); s.ehlo()
-                    s.login(cfg["user"], cfg["password"])
-            st.success("Connexion SMTP OK : authentification acceptée ✅")
-        except Exception as e:
-            st.error(f"Échec d'authentification SMTP : {e}")
 
     # Envoi
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
