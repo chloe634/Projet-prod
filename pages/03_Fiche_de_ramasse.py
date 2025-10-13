@@ -434,8 +434,12 @@ with st.sidebar:
     st.header("Paramètres")
     date_creation = _today_paris()
     date_ramasse = st.date_input("Date de ramasse", value=date_creation)
+    # DDM selon le mode
+    if source_mode == "Sélection manuelle":
+        ddm_manual = st.date_input("DDM par défaut (manuel)", value=_today_paris())
     st.caption(f"DATE DE CRÉATION : **{date_creation.strftime('%d/%m/%Y')}**")
-    st.caption(f"DDM (depuis Production) : **{ddm_saved.strftime('%d/%m/%Y')}**")
+    if source_mode == "Proposition sauvegardée":
+        st.caption(f"DDM (depuis Production) : **{ddm_saved.strftime('%d/%m/%Y')}**")
 
 # 4) Sélection utilisateur
 st.subheader("Sélection des produits")
@@ -448,6 +452,7 @@ selection_labels = st.multiselect(
 # 5) Table éditable
 meta_by_label = {}
 rows = []
+ddm_default = ddm_saved if source_mode == "Proposition sauvegardée" else ddm_manual
 for lab in selection_labels:
     row_opt = opts_df.loc[opts_df["label"] == lab].iloc[0]
     gout = row_opt["gout"]
@@ -459,7 +464,7 @@ for lab in selection_labels:
     rows.append({
         "Référence": ref,
         "Produit (goût + format)": lab.replace(" — ", " - "),
-        "DDM": ddm_saved.strftime("%d/%m/%Y"),
+        "DDM": ddm_default,
         "Quantité cartons": 0,
         "Quantité palettes": 0,
         "Poids palettes (kg)": 0,
@@ -469,8 +474,16 @@ base_df = pd.DataFrame(rows, columns=display_cols)
 
 st.caption("Renseigne **Quantité cartons** et, si besoin, **Quantité palettes**. Le **poids** se calcule automatiquement (cartons × poids/carton du CSV).")
 edited = st.data_editor(
-    base_df, key="ramasse_editor_xlsx_v1", use_container_width=True, hide_index=True,
+    base_df,
+    key="ramasse_editor_xlsx_v1",
+    use_container_width=True,
+    hide_index=True,
     column_config={
+        "DDM": st.column_config.DateColumn(
+            label="DDM",
+            format="DD/MM/YYYY",
+            disabled=(source_mode == "Proposition sauvegardée")  # éditable seulement en manuel
+        ),
         "Quantité cartons":  st.column_config.NumberColumn(min_value=0, step=1),
         "Quantité palettes": st.column_config.NumberColumn(min_value=0, step=1),
         "Poids palettes (kg)": st.column_config.NumberColumn(disabled=True, format="%.0f"),
@@ -512,13 +525,21 @@ if st.button("📄 Télécharger la fiche (XLSX, modèle Sofripa)", use_containe
         st.error(f"Modèle Excel introuvable : `{TEMPLATE_XLSX_PATH}`")
     else:
         try:
+            # --- Conversion DDM pour export (⚠️ garde l'indentation sous 'try:') ---
+            df_for_export = df_calc[display_cols].copy()
+            if not pd.api.types.is_string_dtype(df_for_export["DDM"]):
+                df_for_export["DDM"] = df_for_export["DDM"].apply(
+                    lambda d: d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d)
+                )
+            # -----------------------------------------------------------------------
+
             xlsx_bytes = fill_bl_enlevements_xlsx(
                 template_path=TEMPLATE_XLSX_PATH,
                 date_creation=_today_paris(),
                 date_ramasse=date_ramasse,
                 destinataire_title=DEST_TITLE,
                 destinataire_lines=DEST_LINES,
-                df_lines=df_calc[display_cols],
+                df_lines=df_for_export,  # ← on envoie df_for_export
             )
             fname = f"BL_enlevements_{_today_paris().strftime('%Y%m%d')}.xlsx"
             st.download_button(
@@ -537,12 +558,20 @@ if st.button("🧾 Télécharger la version PDF", use_container_width=True):
         st.error("Renseigne au moins une **Quantité cartons** > 0.")
     else:
         try:
+            # --- Conversion DDM pour export (⚠️ même indentation sous 'try:') ---
+            df_for_export = df_calc[display_cols].copy()
+            if not pd.api.types.is_string_dtype(df_for_export["DDM"]):
+                df_for_export["DDM"] = df_for_export["DDM"].apply(
+                    lambda d: d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d)
+                )
+            # -----------------------------------------------------------------------
+
             pdf_bytes = build_bl_enlevements_pdf(
                 date_creation=_today_paris(),
                 date_ramasse=date_ramasse,
                 destinataire_title=DEST_TITLE,
                 destinataire_lines=DEST_LINES,
-                df_lines=df_calc[display_cols],
+                df_lines=df_for_export,  # ← on envoie df_for_export
             )
             st.session_state["fiche_ramasse_pdf"] = pdf_bytes
             st.download_button(
