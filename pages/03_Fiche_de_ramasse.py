@@ -430,7 +430,7 @@ for lab in selection_labels:
     meta_by_label[lab] = {"_format": fmt, "_poids_carton": poids_carton, "_reference": ref}
     rows.append({
         "Référence": ref,
-        "Produit (goût + format)": lab.replace(" — ", " - "),
+        "Produit (goût + format)": lab,
         "DDM": ddm_default,
         "Quantité cartons": 0,
         "Quantité palettes": 0,
