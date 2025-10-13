@@ -12,6 +12,40 @@ import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
 from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 
+import unicodedata, re  # au besoin, déjà importés plus haut
+
+def _norm(s: str) -> str:
+    # normalise unicode + nettoie espaces/insécables + remplace le signe '×' par 'x'
+    s = str(s or "")
+    s = s.replace("\u00a0", " ").replace("×", "x")
+    s = unicodedata.normalize("NFKC", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    """
+    Construit la liste de TOUS les produits du CSV (manuel), sans dédup agressive,
+    en normalisant Produit/Format pour éviter les caractères piégeux.
+    """
+    if catalog is None or catalog.empty:
+        return pd.DataFrame(columns=["label","gout","format","prod_hint"])
+
+    rows = []
+    for _, r in catalog.iterrows():
+        gout = _norm(r.get("Produit", ""))
+        fmt  = _norm(r.get("Format", ""))
+        des  = _norm(r.get("Désignation", ""))
+        if not (gout and fmt):
+            continue
+        rows.append({
+            "label": f"{gout} — {fmt}",
+            "gout": gout,
+            "format": fmt,
+            "prod_hint": des,
+        })
+    return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
+
+
 # === EMAIL ===
 import smtplib
 from email.message import EmailMessage
@@ -302,28 +336,6 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
         opts_rows.append({"label": f"{gout} — {fmt}", "gout": gout, "format": fmt})
     return pd.DataFrame(opts_rows).sort_values(by="label").reset_index(drop=True)
 
-def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construit la liste de tous les produits dispo en mode manuel
-    à partir du CSV, sans déduplication agressive.
-    """
-    if catalog is None or catalog.empty:
-        return pd.DataFrame(columns=["label","gout","format","prod_hint"])
-
-    rows = []
-    for _, r in catalog.iterrows():
-        gout = str(r.get("Produit","")).strip()
-        fmt  = str(r.get("Format","")).strip()
-        if not (gout and fmt):
-            continue
-        rows.append({
-            "label": f"{gout} — {fmt}",
-            "gout": gout,
-            "format": fmt,
-            "prod_hint": str(r.get("Désignation","")).strip()
-        })
-    return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
-
 # ================================== UI =======================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
 section("Fiche de ramasse", "🚚")
@@ -386,6 +398,9 @@ with st.sidebar:
     st.header("Paramètres")
     date_creation = _today_paris()
     date_ramasse = st.date_input("Date de ramasse", value=date_creation)
+    if st.button("🔄 Recharger le catalogue"):
+        _load_catalog.clear()  # vide le cache de @st.cache_data
+        st.experimental_rerun()
     # DDM selon le mode
     if source_mode == "Sélection manuelle":
         ddm_manual = st.date_input("DDM par défaut (manuel)", value=_today_paris())
