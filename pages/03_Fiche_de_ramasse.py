@@ -303,21 +303,26 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(opts_rows).sort_values(by="label").reset_index(drop=True)
 
 def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    """
+    Construit la liste de tous les produits dispo en mode manuel
+    à partir du CSV, sans déduplication agressive.
+    """
     if catalog is None or catalog.empty:
-        return pd.DataFrame(columns=["label","gout","format"])
-    rows, seen = [], set()
+        return pd.DataFrame(columns=["label","gout","format","prod_hint"])
+
+    rows = []
     for _, r in catalog.iterrows():
-        gout = str(r.get("Produit","")).strip()     # <- non canonique
+        gout = str(r.get("Produit","")).strip()
         fmt  = str(r.get("Format","")).strip()
         if not (gout and fmt):
             continue
-        key = (gout, fmt)
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append({"label": f"{gout} — {fmt}", "gout": gout, "format": fmt})
+        rows.append({
+            "label": f"{gout} — {fmt}",
+            "gout": gout,
+            "format": fmt,
+            "prod_hint": str(r.get("Désignation","")).strip()
+        })
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
-
 
 # ================================== UI =======================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
