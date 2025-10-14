@@ -154,9 +154,9 @@ def _set(ws, addr: str, value, number_format: str | None = None):
 
 def _addr(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
-
-# ======================================================================
-#     Fiche de prod 7000L — (laisse tel quel si tu l’utilises)
+    
+# ====================================================================== 
+# Fiche de prod 7000L — (laisse tel quel si tu l’utilises) 
 # ======================================================================
 
 def fill_fiche_7000L_xlsx(
@@ -169,25 +169,143 @@ def fill_fiche_7000L_xlsx(
     sheet_name: str | None = None,
     df_min=None,
 ) -> bytes:
+    """
+    Remplit UNIQUEMENT :
+      - H8 = goût canonique (gout1)
+      - A20 = DDM (jj/mm/aaaa)
+      - Ligne 15 = quantités de cartons par format, à la colonne dont l'en-tête (ligne 14) correspond au format (ex: '75cL x6')
+    Sans modifier aucune formule.
+    """
+    import re
+    import pandas as pd
+    import openpyxl
+
+    # Hypothèses du modèle (adapter si besoin)
+    HEADER_ROW = 14  # ligne des libellés de format (ex: '75cL x6')
+    TARGET_ROW = 15  # ligne où écrire les quantités
+    SHEET_CANDIDATES = ["Fiche de production 7000 L", "Fiche de production 7000L"]
+
+    # --- helpers locaux ---
+    FORMAT_RX = re.compile(r"(\d{2,3})\s*cL\s*x\s*(\d+)", re.IGNORECASE)
+
+    def _norm_format_label(s: str) -> str | None:
+        """Normalise '75cL x6' (en tolérant espaces/majuscules). Renvoie '75cL x6' ou None."""
+        if not isinstance(s, str):
+            return None
+        s = s.strip()
+        m = FORMAT_RX.search(s.replace("CL", "cL"))
+        if not m:
+            return None
+        cl = m.group(1)
+        pack = m.group(2)
+        return f"{cl}cL x{pack}"
+
+    def _extract_fmt_from_produit(prod: str) -> str | None:
+        """Essaye d'extraire 'XXcL xN' depuis la colonne Produit."""
+        if not isinstance(prod, str):
+            return None
+        return _norm_format_label(prod)
+
+    def _extract_fmt_from_stock(stock: str) -> str | None:
+        """
+        Repli si le Produit ne contient pas le format.
+        Utilise _parse_format_from_stock déjà présent dans le fichier pour récupérer (nb, vol_en_L).
+        """
+        nb, volL = _parse_format_from_stock(stock)
+        if nb is None or volL is None:
+            return None
+        cl = int(round(volL * 100))  # 0.75 L -> 75 cL ; 0.33 L -> 33 cL
+        return f"{cl}cL x{nb}"
+
+    def _build_counts(df: pd.DataFrame, flavor: str) -> dict[str, int]:
+        """
+        Agrège les 'Cartons à produire (arrondi)' par format normalisé 'XXcL xN'
+        en filtrant sur le goût canonique demandé.
+        """
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return {}
+        req_cols = {"Produit", "Stock", "GoutCanon", "Cartons à produire (arrondi)"}
+        if any(c not in df.columns for c in req_cols):
+            return {}
+
+        dff = df.copy()
+        dff = dff[dff["GoutCanon"].astype(str).str.strip() == str(flavor or "").strip()]
+        if dff.empty:
+            return {}
+
+        counts: dict[str, int] = {}
+        for _, r in dff.iterrows():
+            qty = pd.to_numeric(r.get("Cartons à produire (arrondi)"), errors="coerce")
+            qty = int(qty) if pd.notna(qty) else 0
+            if qty <= 0:
+                continue
+
+            fmt = _extract_fmt_from_produit(str(r.get("Produit", "")))
+            if not fmt:
+                fmt = _extract_fmt_from_stock(str(r.get("Stock", "")))
+            if not fmt:
+                continue
+
+            counts[fmt] = counts.get(fmt, 0) + qty
+
+        return counts
+
+    # --- ouverture et sélection de la feuille ---
     wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
+    if sheet_name and sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+    else:
+        ws = None
+        for nm in SHEET_CANDIDATES:
+            if nm in wb.sheetnames:
+                ws = wb[nm]
+                break
+        if ws is None:
+            # à défaut, prend l'active
+            ws = wb.active
 
-    targets = [sheet_name] if sheet_name else ["Fiche de production 7000 L", "Fiche de production 7000L"]
-    ws = None
-    for nm in targets:
-        if nm and nm in wb.sheetnames:
-            ws = wb[nm]
-            break
-    if ws is None:
-        raise KeyError(f"Feuille cible introuvable. Feuilles présentes : {wb.sheetnames}")
+    # 1) Goût canonique -> H8
+    _set(ws, "H8", gout1 or "")
 
-    # En-têtes (exemple)
-    _set(ws, "D8", gout1 or "")
-    _set(ws, "T8", gout2 or "")
-    _set(ws, "D10", ddm, number_format="DD/MM/YYYY")
-    _set(ws, "O10", ddm.strftime("%d%m%Y"))
-    ferment_date = ddm - relativedelta(years=1)
-    _set(ws, "A20", ferment_date, number_format="DD/MM/YYYY")
+    # 2) DDM -> A20 (jj/mm/aaaa)
+    if isinstance(ddm, date):
+        _set(ws, "A20", ddm, number_format="DD/MM/YYYY")
+    else:
+        # tolère string/isoformat
+        try:
+            ddm_dt = date.fromisoformat(str(ddm))
+            _set(ws, "A20", ddm_dt, number_format="DD/MM/YYYY")
+        except Exception:
+            _set(ws, "A20", str(ddm))
 
+    # 3) Quantités par format -> ligne 15, colonne trouvée via l'en-tête (ligne 14)
+    #    On ne touche à aucune autre cellule (formules intactes).
+    # -- construire l'index des colonnes format --
+    header_map: dict[str, int] = {}  # '75cL x6' -> col_index
+    max_col = ws.max_column
+    for col_idx in range(1, max_col + 1):
+        v = ws.cell(row=HEADER_ROW, column=col_idx).value
+        fmt = _norm_format_label(str(v) if v is not None else "")
+        if fmt:
+            header_map[fmt] = col_idx
+
+    # -- compter les cartons à produire, par format, pour le gout1 --
+    fmt_counts = _build_counts(df_min, flavor=gout1)
+
+    # -- écrire les quantités à la bonne colonne, ligne 15 --
+    for fmt, qty in fmt_counts.items():
+        # match strict puis assoupli (sans espaces/majuscules)
+        col_idx = header_map.get(fmt)
+        if not col_idx:
+            key_norm = fmt.lower().replace(" ", "")
+            for k, cidx in header_map.items():
+                if k.lower().replace(" ", "") == key_norm:
+                    col_idx = cidx
+                    break
+        if col_idx:
+            _safe_set_cell(ws, TARGET_ROW, col_idx, int(qty))
+
+    # Sauvegarde en mémoire
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
