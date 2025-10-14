@@ -19,8 +19,12 @@ from common.storage import (
 )
 
 # ====== Réglages modèle Excel ======
-TEMPLATE_PATH = "assets/Fiche de Prod 250620.xlsx"
-SHEET_NAME = None
+# Mapping entre le choix UI et le fichier modèle à utiliser
+TEMPLATE_MAP = {
+    "Cuve de 7000L": "assets/Grande.xlsx",   # anciennement "Fiche de Prod 250620.xlsx"
+    "Cuve de 5000L": "assets/Petite.xlsx",
+}
+SHEET_NAME = None  # laisse None si le modèle a une feuille active par défaut
 
 # ---------------- UI header ----------------
 apply_theme("Production — Ferment Station", "📦")
@@ -148,12 +152,19 @@ section("Fiche de production (modèle Excel)", "🧾")
 _sp_prev = st.session_state.get("saved_production")
 default_debut = _dt.date.fromisoformat(_sp_prev["semaine_du"]) if _sp_prev and "semaine_du" in _sp_prev else _dt.date.today()
 
+# Sélecteur de modèle (taille de cuve)
+cuve_choice = st.radio(
+    "Modèle de fiche",
+    options=["Cuve de 7000L", "Cuve de 5000L"],
+    horizontal=True,
+    help="Choisis le modèle de fiche à générer. Les données (cartons/DDM) viennent de la proposition sauvegardée."
+)
+
 # Champ unique : date de début fermentation
 date_debut = st.date_input("Date de début de fermentation", value=default_debut)
 
 # DDM = début + 1 an
 date_ddm = date_debut + _dt.timedelta(days=365)
-
 
 if st.button("💾 Sauvegarder cette production", use_container_width=True):
     g_order = []
@@ -166,10 +177,9 @@ if st.button("💾 Sauvegarder cette production", use_container_width=True):
         "df_min": df_min.copy(),
         "df_calc": df_calc.copy(),
         "gouts": g_order,
-        "semaine_du": date_debut.isoformat(),   # renommé mais même logique
+        "semaine_du": date_debut.isoformat(),
         "ddm": date_ddm.isoformat(),
     }
-
     st.success("Production sauvegardée ✅ — tu peux maintenant générer la fiche.")
 
 sp = st.session_state.get("saved_production")
@@ -195,14 +205,20 @@ def _two_gouts_auto(sp_obj, df_min_cur, gouts_cur):
     return (base + [None, None])[:2]
 
 if sp:
+    # Déduction auto des 2 premiers goûts (si ta fiche a 2 colonnes de goût)
     g1, g2 = _two_gouts_auto(sp, sp.get("df_min", df_min), gouts_cibles)
 
-    if not os.path.exists(TEMPLATE_PATH):
-        st.error(f"Modèle introuvable. Place le fichier **{TEMPLATE_PATH}** dans le repo.")
+    template_path = TEMPLATE_MAP.get(cuve_choice)
+    if not template_path or not os.path.exists(template_path):
+        st.error(
+            f"Modèle introuvable pour **{cuve_choice}**. "
+            f"Place le fichier **{template_path}** dans le repo."
+        )
     else:
         try:
+            # 👉 On ré-utilise la même fonction de remplissage : elle accepte un template_path générique
             xlsx_bytes = fill_fiche_7000L_xlsx(
-                template_path=TEMPLATE_PATH,
+                template_path=template_path,
                 semaine_du=_dt.date.fromisoformat(sp["semaine_du"]),
                 ddm=_dt.date.fromisoformat(sp["ddm"]),
                 gout1=g1 or "",
@@ -213,10 +229,10 @@ if sp:
             )
 
             semaine_label = _dt.date.fromisoformat(sp["semaine_du"]).strftime("%d-%m-%Y")
-            fname_xlsx = f"Fiche de production (semaine du {semaine_label}).xlsx"
+            fname_xlsx = f"Fiche de production — {cuve_choice} — {semaine_label}.xlsx"
 
             st.download_button(
-                "📄 Télécharger la fiche (XLSX, 2 pages, identique au modèle)",
+                "📄 Télécharger la fiche (XLSX)",
                 data=xlsx_bytes,
                 file_name=fname_xlsx,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -228,7 +244,6 @@ if sp:
             st.error(f"Erreur lors du remplissage du modèle : {e}")
 else:
     st.info("Sauvegarde la production ci-dessus pour activer la génération de la fiche.")
-
 
 # ================== Mémoire longue (persistante, 4 entrées max) ==================
 st.subheader("Mémoire longue — propositions enregistrées")
