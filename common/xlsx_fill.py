@@ -171,84 +171,97 @@ def fill_fiche_7000L_xlsx(
 ) -> bytes:
     """
     Remplit UNIQUEMENT :
-      - H8 = goût canonique (gout1)
+      - H8 = goût canonique
       - A20 = DDM (jj/mm/aaaa)
-      - Ligne 15 = quantités de cartons par format, à la colonne dont l'en-tête (ligne 14) correspond au format (ex: '75cL x6')
-    Sans modifier aucune formule.
+      - K15/M15/O15/Q15/S15 = quantités de cartons (33cL France, 33cL NIKO, 75cL x6, 75cL x4, 75cL NIKO x6)
+    Sans toucher aux formules du classeur.
     """
-    import re
-    import pandas as pd
     import openpyxl
+    import pandas as pd
 
-    # Hypothèses du modèle (adapter si besoin)
-    HEADER_ROW = 14  # ligne des libellés de format (ex: '75cL x6')
-    TARGET_ROW = 15  # ligne où écrire les quantités
-    SHEET_CANDIDATES = ["Fiche de production 7000 L", "Fiche de production 7000L"]
+    # Ouverture & sélection de la feuille (7000L ou 5000L ont la même feuille "Fiche de production 7000 L")
+    wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
+    targets = [sheet_name] if sheet_name else ["Fiche de production 7000 L", "Fiche de production 7000L"]
+    ws = None
+    for nm in targets:
+        if nm and nm in wb.sheetnames:
+            ws = wb[nm]; break
+    if ws is None:
+        ws = wb.active  # fallback
 
-    # --- helpers locaux ---
-    FORMAT_RX = re.compile(r"(\d{2,3})\s*cL\s*x\s*(\d+)", re.IGNORECASE)
+    # 1) Goût canonique -> H8 (uniquement)
+    _set(ws, "H8", gout1 or "")
 
-    def _norm_format_label(s: str) -> str | None:
-        """Normalise '75cL x6' (en tolérant espaces/majuscules). Renvoie '75cL x6' ou None."""
-        if not isinstance(s, str):
-            return None
-        s = s.strip()
-        m = FORMAT_RX.search(s.replace("CL", "cL"))
-        if not m:
-            return None
-        cl = m.group(1)
-        pack = m.group(2)
-        return f"{cl}cL x{pack}"
+    # 2) DDM -> A20 (uniquement)
+    if isinstance(ddm, date):
+        _set(ws, "A20", ddm, number_format="DD/MM/YYYY")
+    else:
+        try:
+            _set(ws, "A20", date.fromisoformat(str(ddm)), number_format="DD/MM/YYYY")
+        except Exception:
+            _set(ws, "A20", str(ddm))
 
-    def _extract_fmt_from_produit(prod: str) -> str | None:
-        """Essaye d'extraire 'XXcL xN' depuis la colonne Produit."""
-        if not isinstance(prod, str):
-            return None
-        return _norm_format_label(prod)
+    # 3) Quantités de cartons par format -> ligne 15 (colonnes fixes K/M/O/Q/S)
+    #    On utilise la structure de la feuille (lignes 12–13 définissent 33cL/75cL, France/NIKO, X6/X4).
+    #    On filtre df_min sur le goût canonique 'gout1' et on agrège les cartons.
+    k = m = o = q = s = 0  # K15, M15, O15, Q15, S15
 
-    def _extract_fmt_from_stock(stock: str) -> str | None:
-        """
-        Repli si le Produit ne contient pas le format.
-        Utilise _parse_format_from_stock déjà présent dans le fichier pour récupérer (nb, vol_en_L).
-        """
-        nb, volL = _parse_format_from_stock(stock)
-        if nb is None or volL is None:
-            return None
-        cl = int(round(volL * 100))  # 0.75 L -> 75 cL ; 0.33 L -> 33 cL
-        return f"{cl}cL x{nb}"
+    if isinstance(df_min, pd.DataFrame) and not df_min.empty:
+        # Filtre goût principal
+        dff = df_min.copy()
+        if "GoutCanon" in dff.columns:
+            dff = dff[dff["GoutCanon"].astype(str).str.strip() == str(gout1 or "").strip()]
 
-    def _build_counts(df: pd.DataFrame, flavor: str) -> dict[str, int]:
-        """
-        Agrège les 'Cartons à produire (arrondi)' par format normalisé 'XXcL xN'
-        en filtrant sur le goût canonique demandé.
-        """
-        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-            return {}
-        req_cols = {"Produit", "Stock", "GoutCanon", "Cartons à produire (arrondi)"}
-        if any(c not in df.columns for c in req_cols):
-            return {}
+        # Colonne cartons
+        col_cart = None
+        for c in dff.columns:
+            if "Cartons à produire" in str(c):
+                col_cart = c; break
 
-        dff = df.copy()
-        dff = dff[dff["GoutCanon"].astype(str).str.strip() == str(flavor or "").strip()]
-        if dff.empty:
-            return {}
+        # Parcours des lignes pour répartir selon Produit/Stock
+        if col_cart and not dff.empty:
+            for _, r in dff.iterrows():
+                qty = pd.to_numeric(r.get(col_cart), errors="coerce")
+                qty = int(qty) if pd.notna(qty) else 0
+                if qty <= 0: 
+                    continue
 
-        counts: dict[str, int] = {}
-        for _, r in dff.iterrows():
-            qty = pd.to_numeric(r.get("Cartons à produire (arrondi)"), errors="coerce")
-            qty = int(qty) if pd.notna(qty) else 0
-            if qty <= 0:
-                continue
+                prod = str(r.get("Produit", "")).upper()
+                # Essaie de détecter format & pack via helpers déjà présents
+                nb, volL = _parse_format_from_stock(str(r.get("Stock", "")))
+                # Fallback depuis libellé produit (ex: "75cL x6")
+                if nb is None or volL is None:
+                    m_nb = re.search(r"x\s*(\d+)", prod)
+                    m_vol = re.search(r"(\d+(?:[.,]\d+)?)\s*cL", prod, flags=re.I)
+                    nb = int(m_nb.group(1)) if m_nb else nb
+                    volL = (float(m_vol.group(1).replace(",", "."))/100.0) if m_vol else volL
 
-            fmt = _extract_fmt_from_produit(str(r.get("Produit", "")))
-            if not fmt:
-                fmt = _extract_fmt_from_stock(str(r.get("Stock", "")))
-            if not fmt:
-                continue
+                # Répartition
+                if volL and abs(volL - 0.33) < 1e-6 and (nb == 12):
+                    if "NIKO" in prod:
+                        m += qty   # 33 cL NIKO -> M15
+                    else:
+                        k += qty   # 33 cL France -> K15
+                elif volL and abs(volL - 0.75) < 1e-6:
+                    if nb == 6:
+                        if "NIKO" in prod:
+                            s += qty  # 75 cL NIKO x6 -> S15
+                        else:
+                            o += qty  # 75 cL x6 -> O15
+                    elif nb == 4:
+                        q += qty      # 75 cL x4 -> Q15
+                # autres formats ignorés (la feuille ne prévoit pas de colonne dédiée)
 
-            counts[fmt] = counts.get(fmt, 0) + qty
+    # Écritures (ligne 15)
+    _safe_set_cell(ws, 15, 11, int(k))  # K15 : 33cL France x12
+    _safe_set_cell(ws, 15, 13, int(m))  # M15 : 33cL NIKO x12
+    _safe_set_cell(ws, 15, 15, int(o))  # O15 : 75cL x6
+    _safe_set_cell(ws, 15, 17, int(q))  # Q15 : 75cL x4
+    _safe_set_cell(ws, 15, 19, int(s))  # S15 : 75cL NIKO x6 (saft)
 
-        return counts
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
 
     # --- ouverture et sélection de la feuille ---
     wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
