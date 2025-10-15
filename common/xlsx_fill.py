@@ -303,48 +303,40 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         ws = wb.active  # fallback
 
-       # --- image schéma cuves sur P29:X51 (100% safe) ---
+           # --- Image schéma cuves : ancrage simple + taille fixe (pas d'étirement) ---
     try:
-        if _has_pillow():
-            root = _project_root()
-            base = Path(template_path).stem.lower()
-            candidates = []
-            if "grande" in base:
-                candidates += [root / "assets" / "schema_cuve_orange.png",
-                               root / "assets" / "schema_cuve_orange.jpg",
-                               root / "assets" / "schema_cuve_orange.jpeg"]
-            elif "petite" in base:
-                candidates += [root / "assets" / "schema_cuve_bleu.png",
-                               root / "assets" / "schema_cuve_bleu.jpg",
-                               root / "assets" / "schema_cuve_bleu.jpeg"]
-            candidates += [root / "assets" / "schema_cuve.png"]  # fallback générique
+        root = _project_root()
+        base = Path(template_path).stem.lower()
 
-            img_path = next((p for p in candidates if p.exists()), None)
-            if img_path:
-                img = XLImage(str(img_path))     # nécessite Pillow
-                ws.add_image(img, "P29")         # ancre coin haut-gauche
-                # redimension approx pour couvrir P29:X51
-                try:
-                    def _col_px(col_1b):
-                        w = ws.column_dimensions[get_column_letter(col_1b)].width
-                        return int(round((w if w is not None else 8.43) * 7.0))
-                    def _row_px(row_1b):
-                        h = ws.row_dimensions[row_1b].height
-                        return int(round((h if h is not None else 15) * (96.0/72.0)))
-                    tl_r, tl_c = coordinate_to_tuple("P29")
-                    br_r, br_c = coordinate_to_tuple("X51")
-                    w_px = sum(_col_px(c) for c in range(tl_c, br_c + 1))
-                    h_px = sum(_row_px(r) for r in range(tl_r, br_r + 1))
-                    if w_px > 0 and h_px > 0:
-                        img.width = w_px
-                        img.height = h_px
-                except Exception:
-                    pass
-        # si pas de Pillow ou pas d'image, on ignore silencieusement
+        # 👉 Réglages par modèle (à ajuster si besoin)
+        IMAGE_CFG = {
+            "grande": {
+                "file": "assets/schema_cuve_orange.png",
+                # emplacement souhaité (ton 1er screenshot montre l'image vers AA…)
+                "anchor": "AA32",     # ex: "AA32" ; mets "P29" si tu préfères
+                "width":  330,        # pixels
+                "height": 360,        # pixels
+            },
+            "petite": {
+                "file": "assets/schema_cuve_bleu.png",
+                "anchor": "AA32",
+                "width":  330,
+                "height": 360,
+            },
+        }
+
+        key = "grande" if "grande" in base else "petite" if "petite" in base else "grande"
+        cfg = IMAGE_CFG[key]
+        img_path = (root / cfg["file"])
+        if img_path.exists():
+            img = XLImage(str(img_path))  # nécessite Pillow
+            img.width  = cfg["width"]
+            img.height = cfg["height"]
+            ws.add_image(img, cfg["anchor"])
+        # sinon: on ignore silencieusement
     except Exception:
-        # quoi qu’il arrive, ne bloque pas l’export XLSX
+        # ne bloque jamais l'export si l'image pose problème
         pass
-    
 
     # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
