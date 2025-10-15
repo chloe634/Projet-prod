@@ -16,6 +16,35 @@ from pathlib import Path
 import io, os
 from reportlab.lib.utils import ImageReader  # <-- si tu utilises ReportLab
 
+import unicodedata, re
+
+def _norm_key(s: str) -> str:
+    s = str(s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("’", "'")
+    s = re.sub(r"[\s\-_/]+", " ", s)
+    return " ".join(s.split())
+
+# Canonical -> exact Excel label (expand as needed)
+EXCEL_LABEL_MAP = {
+    _norm_key("Original"):               "K. Original",
+    _norm_key("Menthe citron vert"):     "K. Menthe - Citron Vert",
+    _norm_key("Gingembre"):              "K. Gingembre",
+    _norm_key("Pamplemousse"):           "K. Pamplemousse",
+    _norm_key("Mangue Passion"):         "K. Mangue - Passion",
+    _norm_key("Menthe Poivree"):         "EP. Menthe Poivrée",
+    _norm_key("Mélisse"):                "EP. Mélisse",
+    _norm_key("Anis étoilée"):           "EP. Anis étoilée",
+    _norm_key("Zeste d'agrumes"):        "EP. Zest d'agrumes",
+    _norm_key("Pêche"):                  "IG. Pêche",
+    _norm_key("Autre"):                  "Autre :",    # si tu en as besoin
+}
+
+def _to_excel_label(gout: str) -> str:
+    return EXCEL_LABEL_MAP.get(_norm_key(gout), str(gout or ""))
+
+
 
 def _project_root() -> Path:
     """Racine du projet (= dossier parent de 'common')."""
@@ -190,7 +219,7 @@ def fill_fiche_7000L_xlsx(
         ws = wb.active  # fallback
 
     # 1) Goût canonique -> H8 (uniquement)
-    _set(ws, "H8", gout1 or "")
+    _set(ws, "H8", _to_excel_label(gout1) or "")
 
     # 2) DDM -> A20 (uniquement)
     if isinstance(ddm, date):
