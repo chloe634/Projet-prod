@@ -7,19 +7,24 @@ import re
 import unicodedata
 from datetime import date, datetime
 from typing import Optional, Dict, List, Tuple
+from pathlib import Path
 
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import openpyxl
 from openpyxl.utils import coordinate_to_tuple, get_column_letter
-from pathlib import Path
-import io, os
-from reportlab.lib.utils import ImageReader  # <-- si tu utilises ReportLab
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
-from openpyxl.utils.cell import coordinate_to_tuple, column_index_from_string
+try:
+    # Pour ancrer précisément l'image sur une plage (TwoCellAnchor)
+    from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
+except Exception:
+    AnchorMarker = TwoCellAnchor = None  # fallback si version openpyxl ancienne
 
-import unicodedata, re
+from reportlab.lib.utils import ImageReader  # utilisé par la partie PDF
+
+# ======================================================================
+#                        Normalisation & mapping goûts
+# ======================================================================
 
 def _norm_key(s: str) -> str:
     s = str(s or "").strip().lower()
@@ -29,7 +34,7 @@ def _norm_key(s: str) -> str:
     s = re.sub(r"[\s\-_/]+", " ", s)
     return " ".join(s.split())
 
-# Canonical -> exact Excel label (expand as needed)
+# Canonical -> libellé EXACT attendu par Excel (étends la liste si besoin)
 EXCEL_LABEL_MAP = {
     _norm_key("Original"):               "K. Original",
     _norm_key("Menthe citron vert"):     "K. Menthe - Citron Vert",
@@ -41,13 +46,15 @@ EXCEL_LABEL_MAP = {
     _norm_key("Anis étoilée"):           "EP. Anis étoilée",
     _norm_key("Zeste d'agrumes"):        "EP. Zest d'agrumes",
     _norm_key("Pêche"):                  "IG. Pêche",
-    _norm_key("Autre"):                  "Autre :",    # si tu en as besoin
+    _norm_key("Autre"):                  "Autre :",
 }
 
 def _to_excel_label(gout: str) -> str:
     return EXCEL_LABEL_MAP.get(_norm_key(gout), str(gout or ""))
 
-
+# ======================================================================
+#                        Utilitaires de chemin/asset
+# ======================================================================
 
 def _project_root() -> Path:
     """Racine du projet (= dossier parent de 'common')."""
@@ -186,28 +193,39 @@ def _set(ws, addr: str, value, number_format: str | None = None):
 
 def _addr(col: int, row: int) -> str:
     return f"{get_column_letter(col)}{row}"
-    
-# ====================================================================== 
-# Fiche de prod 7000L — (laisse tel quel si tu l’utilises) 
+
 # ======================================================================
+#                         Insertion d'image ancrée
+# ======================================================================
+
 def _add_image_in_range(ws, img_path: Path, tl_addr: str, br_addr: str):
     """
-    Insère une image et l'ancre exactement sur la plage (top-left -> bottom-right),
-    ex: tl_addr='P29', br_addr='X51' (indices ZERO-BASED dans AnchorMarker).
+    Insère une image et l'ancre exactement sur la plage [tl_addr:br_addr],
+    ex: 'P29' -> 'X51'. Utilise TwoCellAnchor si disponible, sinon ancre
+    simplement en tl_addr.
     """
     if not img_path or not img_path.exists():
         return
     img = XLImage(str(img_path))  # nécessite Pillow
 
-    # Convertit adresses Excel -> indices 0-based pour AnchorMarker
-    tl_row, tl_col = coordinate_to_tuple(tl_addr)  # (row1-based, col1-based)
-    br_row, br_col = coordinate_to_tuple(br_addr)
+    try:
+        if AnchorMarker and TwoCellAnchor:
+            # Convertit adresses Excel -> indices 0-based pour AnchorMarker
+            tl_row, tl_col = coordinate_to_tuple(tl_addr)  # (row1-based, col1-based)
+            br_row, br_col = coordinate_to_tuple(br_addr)
+            frm = AnchorMarker(col=tl_col - 1, colOff=0, row=tl_row - 1, rowOff=0)
+            to  = AnchorMarker(col=br_col - 1, colOff=0, row=br_row - 1, rowOff=0)
+            img.anchor = TwoCellAnchor(_from=frm, _to=to, editAs='oneCell')
+        else:
+            img.anchor = tl_addr
+        ws.add_image(img)
+    except Exception:
+        # on n'échoue pas si l'image pose problème
+        pass
 
-    frm = AnchorMarker(col=tl_col - 1, colOff=0, row=tl_row - 1, rowOff=0)
-    to  = AnchorMarker(col=br_col - 1, colOff=0, row=br_row - 1, rowOff=0)
-
-    img.anchor = TwoCellAnchor(_from=frm, _to=to, editAs='oneCell')
-    ws.add_image(img)
+# ======================================================================
+#                    Fiche de production (Grande/Petite)
+# ======================================================================
 
 def fill_fiche_7000L_xlsx(
     template_path: str,
@@ -221,58 +239,62 @@ def fill_fiche_7000L_xlsx(
 ) -> bytes:
     """
     Remplit UNIQUEMENT :
-      - H8 = goût canonique
-      - A20 = DDM (jj/mm/aaaa)
+      - H8 = libellé Excel du goût (via _to_excel_label)
+      - A20 = date de début de fermentation (semaine_du)
+      - cellule à droite du libellé "DDM" = ddm
       - K15/M15/O15/Q15/S15 = quantités de cartons (33cL France, 33cL NIKO, 75cL x6, 75cL x4, 75cL NIKO x6)
-    Sans toucher aux formules du classeur.
+      - Image schéma cuves en P29:X51 (orange pour Grande, bleu pour Petite)
+    Sans toucher aux autres formules.
     """
     import openpyxl
     import pandas as pd
 
-    # Ouverture & sélection de la feuille (7000L ou 5000L ont la même feuille "Fiche de production 7000 L")
+    # --- ouverture & sélection de la feuille ---
     wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
     targets = [sheet_name] if sheet_name else ["Fiche de production 7000 L", "Fiche de production 7000L"]
     ws = None
     for nm in targets:
         if nm and nm in wb.sheetnames:
-            ws = wb[nm]; break
+            ws = wb[nm]
+            break
     if ws is None:
         ws = wb.active  # fallback
 
-    # --- Réinsertion du schéma cuves selon le modèle ---
-try:
-    root = _project_root()
-    base = Path(template_path).stem.lower()
-    # détection simple: 'grande' -> orange ; 'petite' -> bleu
-    if "grande" in base:
-        img_path = root / "assets" / "schema_cuve_orange.png"
-    elif "petite" in base:
-        img_path = root / "assets" / "schema_cuve_bleu.png"
-    else:
-        # fallback: mets ici l'image par défaut si besoin
-        img_path = root / "assets" / "schema_cuve_orange.png"
+    # --- image schéma cuves sur P29:X51 ---
+    try:
+        root = _project_root()
+        base = Path(template_path).stem.lower()
+        if "grande" in base:
+            img_path = root / "assets" / "schema_cuve_orange.png"
+        elif "petite" in base:
+            img_path = root / "assets" / "schema_cuve_bleu.png"
+        else:
+            img_path = root / "assets" / "schema_cuve_orange.png"
+        _add_image_in_range(ws, img_path, "P29", "X51")
+    except Exception:
+        pass
 
-    # Ancrage EXACT à la plage demandée
-    _add_image_in_range(ws, img_path, "P29", "X51")
-except Exception:
-    # on ignore si l'image n'existe pas/erreur de lib, pour ne pas casser l'export
-    pass
-
-    # 1) Goût canonique -> H8 (uniquement)
+    # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
 
-    # 2) Date de début de fermentation -> A20
-    if isinstance(semaine_du, date):
+    # --- A20 : date de fermentation (semaine_du)
+    try:
         _set(ws, "A20", semaine_du, number_format="DD/MM/YYYY")
-    else:
+    except Exception:
         try:
             _set(ws, "A20", date.fromisoformat(str(semaine_du)), number_format="DD/MM/YYYY")
         except Exception:
             _set(ws, "A20", str(semaine_du))
 
-    # 3) Quantités de cartons par format -> ligne 15 (colonnes fixes K/M/O/Q/S)
-    #    On utilise la structure de la feuille (lignes 12–13 définissent 33cL/75cL, France/NIKO, X6/X4).
-    #    On filtre df_min sur le goût canonique 'gout1' et on agrège les cartons.
+    # --- DDM (cellule à droite du libellé "DDM")
+    try:
+        r, c = _find_cell_by_regex(ws, r"^\s*DDM\s*:?\s*$")
+        if r and c:
+            _safe_set_cell(ws, r, c + 1, ddm, number_format="DD/MM/YYYY")
+    except Exception:
+        pass
+
+    # --- Quantités de cartons par format -> ligne 15 (K/M/O/Q/S)
     k = m = o = q = s = 0  # K15, M15, O15, Q15, S15
 
     if isinstance(df_min, pd.DataFrame) and not df_min.empty:
@@ -281,31 +303,30 @@ except Exception:
         if "GoutCanon" in dff.columns:
             dff = dff[dff["GoutCanon"].astype(str).str.strip() == str(gout1 or "").strip()]
 
-        # Colonne cartons
+        # Colonne "Cartons à produire ..."
         col_cart = None
-        for c in dff.columns:
-            if "Cartons à produire" in str(c):
-                col_cart = c; break
+        for ccc in dff.columns:
+            if "Cartons à produire" in str(ccc):
+                col_cart = ccc
+                break
 
-        # Parcours des lignes pour répartir selon Produit/Stock
         if col_cart and not dff.empty:
-            for _, r in dff.iterrows():
-                qty = pd.to_numeric(r.get(col_cart), errors="coerce")
+            for _, r0 in dff.iterrows():
+                qty = pd.to_numeric(r0.get(col_cart), errors="coerce")
                 qty = int(qty) if pd.notna(qty) else 0
-                if qty <= 0: 
+                if qty <= 0:
                     continue
 
-                prod = str(r.get("Produit", "")).upper()
-                # Essaie de détecter format & pack via helpers déjà présents
-                nb, volL = _parse_format_from_stock(str(r.get("Stock", "")))
-                # Fallback depuis libellé produit (ex: "75cL x6")
+                prod = str(r0.get("Produit", "")).upper()
+                # Détection format & pack
+                nb, volL = _parse_format_from_stock(str(r0.get("Stock", "")))
                 if nb is None or volL is None:
                     m_nb = re.search(r"x\s*(\d+)", prod)
                     m_vol = re.search(r"(\d+(?:[.,]\d+)?)\s*cL", prod, flags=re.I)
                     nb = int(m_nb.group(1)) if m_nb else nb
                     volL = (float(m_vol.group(1).replace(",", "."))/100.0) if m_vol else volL
 
-                # Répartition
+                # Répartition vers les colonnes ligne 15
                 if volL and abs(volL - 0.33) < 1e-6 and (nb == 12):
                     if "NIKO" in prod:
                         m += qty   # 33 cL NIKO -> M15
@@ -319,7 +340,7 @@ except Exception:
                             o += qty  # 75 cL x6 -> O15
                     elif nb == 4:
                         q += qty      # 75 cL x4 -> Q15
-                # autres formats ignorés (la feuille ne prévoit pas de colonne dédiée)
+                # autres formats ignorés (pas de colonne dédiée)
 
     # Écritures (ligne 15)
     _safe_set_cell(ws, 15, 11, int(k))  # K15 : 33cL France x12
@@ -327,65 +348,6 @@ except Exception:
     _safe_set_cell(ws, 15, 15, int(o))  # O15 : 75cL x6
     _safe_set_cell(ws, 15, 17, int(q))  # Q15 : 75cL x4
     _safe_set_cell(ws, 15, 19, int(s))  # S15 : 75cL NIKO x6 (saft)
-
-    bio = io.BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
-
-    # --- ouverture et sélection de la feuille ---
-    wb = openpyxl.load_workbook(template_path, data_only=False, keep_vba=False)
-    if sheet_name and sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-    else:
-        ws = None
-        for nm in SHEET_CANDIDATES:
-            if nm in wb.sheetnames:
-                ws = wb[nm]
-                break
-        if ws is None:
-            # à défaut, prend l'active
-            ws = wb.active
-
-    # 1) Goût canonique -> H8
-    _set(ws, "H8", gout1 or "")
-
-    # 2) DDM -> A20 (jj/mm/aaaa)
-    if isinstance(ddm, date):
-        _set(ws, "A20", ddm, number_format="DD/MM/YYYY")
-    else:
-        # tolère string/isoformat
-        try:
-            ddm_dt = date.fromisoformat(str(ddm))
-            _set(ws, "A20", ddm_dt, number_format="DD/MM/YYYY")
-        except Exception:
-            _set(ws, "A20", str(ddm))
-
-    # 3) Quantités par format -> ligne 15, colonne trouvée via l'en-tête (ligne 14)
-    #    On ne touche à aucune autre cellule (formules intactes).
-    # -- construire l'index des colonnes format --
-    header_map: dict[str, int] = {}  # '75cL x6' -> col_index
-    max_col = ws.max_column
-    for col_idx in range(1, max_col + 1):
-        v = ws.cell(row=HEADER_ROW, column=col_idx).value
-        fmt = _norm_format_label(str(v) if v is not None else "")
-        if fmt:
-            header_map[fmt] = col_idx
-
-    # -- compter les cartons à produire, par format, pour le gout1 --
-    fmt_counts = _build_counts(df_min, flavor=gout1)
-
-    # -- écrire les quantités à la bonne colonne, ligne 15 --
-    for fmt, qty in fmt_counts.items():
-        # match strict puis assoupli (sans espaces/majuscules)
-        col_idx = header_map.get(fmt)
-        if not col_idx:
-            key_norm = fmt.lower().replace(" ", "")
-            for k, cidx in header_map.items():
-                if k.lower().replace(" ", "") == key_norm:
-                    col_idx = cidx
-                    break
-        if col_idx:
-            _safe_set_cell(ws, TARGET_ROW, col_idx, int(qty))
 
     # Sauvegarde en mémoire
     bio = io.BytesIO()
@@ -618,7 +580,6 @@ def fill_bl_enlevements_xlsx(
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
-
 
 # =======================  PDF BL enlèvements (fpdf2)  =======================
 
