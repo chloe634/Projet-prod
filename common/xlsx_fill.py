@@ -200,28 +200,64 @@ def _addr(col: int, row: int) -> str:
 
 def _add_image_in_range(ws, img_path: Path, tl_addr: str, br_addr: str):
     """
-    Insère une image et l'ancre exactement sur la plage [tl_addr:br_addr],
-    ex: 'P29' -> 'X51'. Utilise TwoCellAnchor si disponible, sinon ancre
-    simplement en tl_addr.
+    Insère une image et l'ancre sur la plage [tl_addr:br_addr] (ex: 'P29'->'X51').
+    - Essaie TwoCellAnchor (précis).
+    - Sinon, fallback ws.add_image(img, tl_addr) + redimension approx.
+    Loggue ce qu'il fait pour aider au debug.
     """
-    if not img_path or not img_path.exists():
-        return
-    img = XLImage(str(img_path))  # nécessite Pillow
-
     try:
+        if not img_path or not img_path.exists():
+            print(f"[xlsx_fill] Image introuvable: {img_path}")
+            return
+
+        # charge l'image (nécessite Pillow)
+        img = XLImage(str(img_path))
+        print(f"[xlsx_fill] Image OK: {img_path.name}")
+
+        # ---------- 1) Tentative TwoCellAnchor (précise) ----------
         if AnchorMarker and TwoCellAnchor:
-            # Convertit adresses Excel -> indices 0-based pour AnchorMarker
-            tl_row, tl_col = coordinate_to_tuple(tl_addr)  # (row1-based, col1-based)
-            br_row, br_col = coordinate_to_tuple(br_addr)
-            frm = AnchorMarker(col=tl_col - 1, colOff=0, row=tl_row - 1, rowOff=0)
-            to  = AnchorMarker(col=br_col - 1, colOff=0, row=br_row - 1, rowOff=0)
-            img.anchor = TwoCellAnchor(_from=frm, _to=to, editAs='oneCell')
-        else:
-            img.anchor = tl_addr
-        ws.add_image(img)
-    except Exception:
-        # on n'échoue pas si l'image pose problème
-        pass
+            try:
+                tl_row, tl_col = coordinate_to_tuple(tl_addr)  # 1-based
+                br_row, br_col = coordinate_to_tuple(br_addr)
+                frm = AnchorMarker(col=tl_col - 1, colOff=0, row=tl_row - 1, rowOff=0)
+                to  = AnchorMarker(col=br_col - 1, colOff=0, row=br_row - 1, rowOff=0)
+                img.anchor = TwoCellAnchor(_from=frm, _to=to, editAs='oneCell')
+                ws.add_image(img)
+                print("[xlsx_fill] Image ancrée via TwoCellAnchor.")
+                return
+            except Exception as e:
+                print(f"[xlsx_fill] TwoCellAnchor indisponible/échec: {e}")
+
+        # ---------- 2) Fallback: ancre en coin supérieur gauche ----------
+        ws.add_image(img, tl_addr)
+        print(f"[xlsx_fill] Image ajoutée en {tl_addr} (fallback). Redimension approx...")
+
+        # Redimension approx pour couvrir la plage (si possible)
+        # Conversion approximative des largeurs/hauteurs Excel -> pixels :
+        # - largeur colonne (unités Excel) ~ 7 pixels
+        # - hauteur ligne (points) -> pixels ~ points * 96/72
+        def _col_pixels(col_idx_1b: int) -> int:
+            col_letter = get_column_letter(col_idx_1b)
+            w = ws.column_dimensions[col_letter].width
+            if w is None:
+                w = 8.43  # défaut Excel
+            return int(round(w * 7.0))
+
+        def _row_pixels(row_idx_1b: int) -> int:
+            h = ws.row_dimensions[row_idx_1b].height
+            if h is None:
+                h = 15  # points, défaut Excel
+            return int(round(h * (96.0 / 72.0)))
+
+        tl_r, tl_c = coordinate_to_tuple(tl_addr)
+        br_r, br_c = coordinate_to_tuple(br_addr)
+        width_px  = sum(_col_pixels(c) for c in range(tl_c, br_c + 1))
+        height_px = sum(_row_pixels(r) for r in range(tl_r, br_r + 1))
+        if width_px > 0 and height_px > 0:
+            img.width, img.height = width_px, height_px
+            print(f"[xlsx_fill] Redimension: {width_px}x{height_px}px")
+    except Exception as e:
+        print(f"[xlsx_fill] ERREUR insertion image: {e}")
 
 # ======================================================================
 #                    Fiche de production (Grande/Petite)
@@ -261,18 +297,28 @@ def fill_fiche_7000L_xlsx(
         ws = wb.active  # fallback
 
     # --- image schéma cuves sur P29:X51 ---
-    try:
-        root = _project_root()
-        base = Path(template_path).stem.lower()
-        if "grande" in base:
-            img_path = root / "assets" / "schema_cuve_orange.png"
-        elif "petite" in base:
-            img_path = root / "assets" / "schema_cuve_bleu.png"
-        else:
-            img_path = root / "assets" / "schema_cuve_orange.png"
+    root = _project_root()
+    base = Path(template_path).stem.lower()
+    
+    # essaie plusieurs noms/fallbacks pour éviter les erreurs de chemin
+    candidates = []
+    if "grande" in base:
+        candidates += [root / "assets" / "schema_cuve_orange.png",
+                       root / "assets" / "schema_cuve_orange.jpg",
+                       root / "assets" / "schema_cuve_orange.jpeg"]
+    elif "petite" in base:
+        candidates += [root / "assets" / "schema_cuve_bleu.png",
+                       root / "assets" / "schema_cuve_bleu.jpg",
+                       root / "assets" / "schema_cuve_bleu.jpeg"]
+    # fallback générique
+    candidates += [root / "assets" / "schema_cuve.png"]
+    
+    img_path = next((p for p in candidates if p.exists()), None)
+    if img_path is None:
+        print(f"[xlsx_fill] Aucune image trouvée parmi: {[str(p) for p in candidates]}")
+    else:
         _add_image_in_range(ws, img_path, "P29", "X51")
-    except Exception:
-        pass
+    
 
     # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
