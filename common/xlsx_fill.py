@@ -221,14 +221,15 @@ def fill_fiche_7000L_xlsx(
     # 1) Goût canonique -> H8 (uniquement)
     _set(ws, "H8", _to_excel_label(gout1) or "")
 
-    # 2) DDM -> A20 (uniquement)
-    if isinstance(ddm, date):
-        _set(ws, "A20", ddm, number_format="DD/MM/YYYY")
+    # 2) Date de début de fermentation -> A20 (au lieu de DDM)
+    if isinstance(semaine_du, date):
+        _set(ws, "A20", semaine_du, number_format="DD/MM/YYYY")
     else:
         try:
-            _set(ws, "A20", date.fromisoformat(str(ddm)), number_format="DD/MM/YYYY")
+            _set(ws, "A20", date.fromisoformat(str(semaine_du)), number_format="DD/MM/YYYY")
         except Exception:
-            _set(ws, "A20", str(ddm))
+            _set(ws, "A20", str(semaine_du))
+
 
     # 3) Quantités de cartons par format -> ligne 15 (colonnes fixes K/M/O/Q/S)
     #    On utilise la structure de la feuille (lignes 12–13 définissent 33cL/75cL, France/NIKO, X6/X4).
