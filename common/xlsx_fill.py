@@ -303,47 +303,39 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         ws = wb.active  # fallback
 
-      # --- Image schéma cuves : exactement dans P29:X51 (ancrage P29 + taille calculée) ---
+          # --- Schéma cuves : ancrage fixe & taille fixe (comme sur le screenshot) ---
     try:
-        from openpyxl.drawing.image import Image as XLImage
-        def _col_px(ws, col_1b:int) -> int:
-            w = ws.column_dimensions[get_column_letter(col_1b)].width
-            # 1 unité de largeur Excel ≈ 7 px (approx fiable)
-            return int(round((w if w is not None else 8.43) * 7.0))
-        def _row_px(ws, row_1b:int) -> int:
-            h = ws.row_dimensions[row_1b].height
-            # 1 pt ≈ 96/72 px ; défaut Excel ≈ 15 pt
-            return int(round((h if h is not None else 15) * (96.0/72.0)))
-
-        # --- choix du fichier selon le modèle ---
         root = _project_root()
         base = Path(template_path).stem.lower()
-        if "grande" in base:
-            img_file = root / "assets" / "schema_cuve_orange.png"
-        elif "petite" in base:
-            img_file = root / "assets" / "schema_cuve_bleu.png"
-        else:
-            img_file = root / "assets" / "schema_cuve_orange.png"
 
-        if img_file.exists():
-            # Taille exacte de la plage P29:X51
-            tl_r, tl_c = coordinate_to_tuple("P29")  # (row, col) 1-based
-            br_r, br_c = coordinate_to_tuple("X51")
-            width_px  = sum(_col_px(ws, c) for c in range(tl_c, br_c + 1))
-            height_px = sum(_row_px(ws, r) for r in range(tl_r, br_r + 1))
+        # Réglages par modèle (tu peux affiner anchor/width/height si besoin)
+        IMAGE_CFG = {
+            "grande": {
+                "file": "assets/schema_cuve_orange.png",
+                "anchor": "R30",   # cellule d’ancrage (coin haut-gauche)
+                "width":  420,     # px
+                "height": 360,     # px
+            },
+            "petite": {
+                "file": "assets/schema_cuve_bleu.png",
+                "anchor": "R30",
+                "width":  420,
+                "height": 360,
+            },
+        }
 
-            img = XLImage(str(img_file))
-            # on laisse un léger padding pour ne pas toucher les bords
-            img.width  = max(10, width_px  - 8)
-            img.height = max(10, height_px - 8)
+        key = "grande" if "grande" in base else ("petite" if "petite" in base else "grande")
+        cfg = IMAGE_CFG[key]
+        img_path = (root / cfg["file"])
 
-            # ancre en P29 (coin haut-gauche de la zone)
-            ws.add_image(img, "P29")
-        # sinon on ignore calmement
+        if img_path.exists():
+            img = XLImage(str(img_path))   # nécessite Pillow
+            img.width  = cfg["width"]
+            img.height = cfg["height"]
+            ws.add_image(img, cfg["anchor"])
+        # sinon : on ignore (ne bloque pas l’export)
     except Exception:
-        # ne bloque jamais l'export si l'image pose problème
         pass
-
 
     # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
