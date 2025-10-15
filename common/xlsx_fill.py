@@ -15,6 +15,9 @@ from openpyxl.utils import coordinate_to_tuple, get_column_letter
 from pathlib import Path
 import io, os
 from reportlab.lib.utils import ImageReader  # <-- si tu utilises ReportLab
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
+from openpyxl.utils.cell import coordinate_to_tuple, column_index_from_string
 
 import unicodedata, re
 
@@ -187,6 +190,24 @@ def _addr(col: int, row: int) -> str:
 # ====================================================================== 
 # Fiche de prod 7000L — (laisse tel quel si tu l’utilises) 
 # ======================================================================
+def _add_image_in_range(ws, img_path: Path, tl_addr: str, br_addr: str):
+    """
+    Insère une image et l'ancre exactement sur la plage (top-left -> bottom-right),
+    ex: tl_addr='P29', br_addr='X51' (indices ZERO-BASED dans AnchorMarker).
+    """
+    if not img_path or not img_path.exists():
+        return
+    img = XLImage(str(img_path))  # nécessite Pillow
+
+    # Convertit adresses Excel -> indices 0-based pour AnchorMarker
+    tl_row, tl_col = coordinate_to_tuple(tl_addr)  # (row1-based, col1-based)
+    br_row, br_col = coordinate_to_tuple(br_addr)
+
+    frm = AnchorMarker(col=tl_col - 1, colOff=0, row=tl_row - 1, rowOff=0)
+    to  = AnchorMarker(col=br_col - 1, colOff=0, row=br_row - 1, rowOff=0)
+
+    img.anchor = TwoCellAnchor(_from=frm, _to=to, editAs='oneCell')
+    ws.add_image(img)
 
 def fill_fiche_7000L_xlsx(
     template_path: str,
@@ -217,6 +238,25 @@ def fill_fiche_7000L_xlsx(
             ws = wb[nm]; break
     if ws is None:
         ws = wb.active  # fallback
+
+    # --- Réinsertion du schéma cuves selon le modèle ---
+try:
+    root = _project_root()
+    base = Path(template_path).stem.lower()
+    # détection simple: 'grande' -> orange ; 'petite' -> bleu
+    if "grande" in base:
+        img_path = root / "assets" / "schema_cuve_orange.png"
+    elif "petite" in base:
+        img_path = root / "assets" / "schema_cuve_bleu.png"
+    else:
+        # fallback: mets ici l'image par défaut si besoin
+        img_path = root / "assets" / "schema_cuve_orange.png"
+
+    # Ancrage EXACT à la plage demandée
+    _add_image_in_range(ws, img_path, "P29", "X51")
+except Exception:
+    # on ignore si l'image n'existe pas/erreur de lib, pour ne pas casser l'export
+    pass
 
     # 1) Goût canonique -> H8 (uniquement)
     _set(ws, "H8", _to_excel_label(gout1) or "")
