@@ -324,14 +324,11 @@ def fill_fiche_7000L_xlsx(
             with PILImage.open(img_file) as im:
                 orig_w, orig_h = im.size
 
-            # 2) cadre max (ajuste si besoin)
-            # -> sur ta capture, une image ~300-340 px de large passe bien
-            MAX_W, MAX_H = 340, 320   # px
-
-            # 3) scale factor pour conserver le ratio
+            # 2) cadre max (px)
+            MAX_W, MAX_H = 400, 420   # ← augmente un peu (ex: 380x350)
+            # 3) scale factor (on restreint à 1.0 = pas d’upscale)
             scale = min(MAX_W / orig_w, MAX_H / orig_h, 1.0)
-            out_w = int(round(orig_w * scale))
-            out_h = int(round(orig_h * scale))
+
 
             # 4) on ancre et on applique la taille SANS déformation
             #    (change "T30" pour décaler : Q/R/S = gauche/droite ; 28/32 = haut/bas)
