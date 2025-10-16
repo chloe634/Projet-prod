@@ -336,8 +336,6 @@ def fill_fiche_7000L_xlsx(
         # ws.print_area = "A1:U56"
     except Exception:
         pass
-    ception:
-            pass
 
      # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
     try:
