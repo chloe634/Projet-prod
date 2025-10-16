@@ -303,44 +303,42 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         ws = wb.active  # fallback
 
-              # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
+                 # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle ---
     try:
-        from PIL import Image as PILImage  # Pillow requis
+        from PIL import Image as PILImage
         from openpyxl.drawing.image import Image as XLImage
-
+    
         root = _project_root()
         base = Path(template_path).stem.lower()
-
-        # Fichier selon le modèle
+    
         if "grande" in base:
             img_file = root / "assets" / "schema_cuve_orange.png"
         elif "petite" in base:
             img_file = root / "assets" / "schema_cuve_bleu.png"
         else:
             img_file = root / "assets" / "schema_cuve_orange.png"
-
+    
         if img_file.exists():
-            # 1) lis la taille d'origine (px)
+            # 1) taille d'origine
             with PILImage.open(img_file) as im:
                 orig_w, orig_h = im.size
-
-            # 2) cadre max (px)
-            MAX_W, MAX_H = 400, 420   # ← augmente un peu (ex: 380x350)
-            # 3) scale factor (on restreint à 1.0 = pas d’upscale)
+    
+            # 2) cadre max (px) — agrandi
+            MAX_W, MAX_H = 400, 420
+    
+            # 3) facteur d'échelle (pas d’upscale au-delà de 1.0)
             scale = min(MAX_W / orig_w, MAX_H / orig_h, 1.0)
-
-
-            # 4) on ancre et on applique la taille SANS déformation
-            #    (change "T30" pour décaler : Q/R/S = gauche/droite ; 28/32 = haut/bas)
+            out_w = max(1, int(round(orig_w * scale)))
+            out_h = max(1, int(round(orig_h * scale)))
+    
+            # 4) ancrage + taille
             anchor_cell = "T30"
-
             xl_img = XLImage(str(img_file))
             xl_img.width  = out_w
             xl_img.height = out_h
             ws.add_image(xl_img, anchor_cell)
-        # sinon on ignore en silence
     except Exception:
-        # ne bloque jamais l'export XLSX si l'image plante
+        # ne bloque jamais l'export si l'image plante
         pass
 
     # --- H8 : goût (libellé Excel)
