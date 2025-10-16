@@ -302,7 +302,26 @@ def fill_fiche_7000L_xlsx(
             break
     if ws is None:
         ws = wb.active  # fallback
-   
+
+        # --- Mise en page : tenir sur 1 page A4 en portrait ---
+    try:
+        ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 1
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+    
+        # marges un peu réduites pour respirer
+        ws.page_margins.left   = 0.5
+        ws.page_margins.right  = 0.5
+        ws.page_margins.top    = 0.5
+        ws.page_margins.bottom = 0.5
+    
+        # (optionnel) zone d’impression – adapte si ton modèle diffère
+        # ws.print_area = "A1:U56"
+    except Exception:
+        pass
+
      # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
     try:
         from PIL import Image as PILImage  # Pillow requis
@@ -346,7 +365,10 @@ def fill_fiche_7000L_xlsx(
         # ne bloque jamais l'export XLSX si l'image plante
         pass
 
-            # --- Logos à gauche du titre (Symbiose + NIKO) ---
+        # --- Logos à gauche du titre (Symbiose + NIKO) ---
+    _add_logo(symbiose_path, anchor_cell="B3", max_w=160, max_h=52)  # même position que le modèle
+    _add_logo(niko_path,     anchor_cell="E3", max_w=120, max_h=44)  # juste à droite du logo Symbiose
+
     try:
         from PIL import Image as PILImage
         from openpyxl.drawing.image import Image as XLImage
@@ -393,23 +415,6 @@ def fill_fiche_7000L_xlsx(
     except Exception as e:
         print(f"[xlsx_fill] Bloc logos a échoué: {e}")
 
-
-        
-    # --- Libellé DDM en A10 (lisible) ---
-    _set(ws, "A10", "DDM : ")
-    try:
-        # élargit légèrement la colonne A pour éviter les '##########'
-        colA = ws.column_dimensions["A"]
-        if not colA.width or colA.width < 12:
-            colA.width = 12
-        # optionnel: fusionne A10:B10 si ton template est serré
-        try:
-            ws.merge_cells(start_row=10, start_column=1, end_row=10, end_column=2)  # A10:B10
-        except Exception:
-            pass
-    except Exception:
-        pass
-
     # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
 
@@ -422,13 +427,13 @@ def fill_fiche_7000L_xlsx(
         except Exception:
             _set(ws, "A20", str(semaine_du))
 
-    # --- DDM (cellule à droite du libellé "DDM")
-    try:
-        r, c = _find_cell_by_regex(ws, r"^\s*DDM\s*:?\s*$")
-        if r and c:
-            _safe_set_cell(ws, r, c + 1, ddm, number_format="DD/MM/YYYY")
-    except Exception:
-        pass
+    # --- DDM en A10 + date dans la cellule immédiatement à droite (ex: B10) ---
+    # Force le label exactement en A10 (même si A10 fait partie d'une fusion)
+    _set(ws, "A10", "DDM :")
+    
+    # Place la date dans la cellule à droite du label (B10), openpyxl gère la fusion via _safe_set_cell
+    _safe_set_cell(ws, 10, 2, ddm, number_format="DD/MM/YYYY")   # B10
+
 
     # --- Quantités de cartons par format -> ligne 15 (K/M/O/Q/S)
     k = m = o = q = s = 0  # K15, M15, O15, Q15, S15
