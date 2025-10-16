@@ -27,6 +27,26 @@ def _has_pillow() -> bool:
         return True
     except Exception:
         return False
+def _add_logo(ws, path: Path | None, anchor_cell: str, max_w: int, max_h: int):
+    """Ajoute un logo ancré sans déformer l'image (no-op si chemin invalide)."""
+    try:
+        if not path or not path.exists():
+            print(f"[xlsx_fill] Logo introuvable pour ancre {anchor_cell} -> {path}")
+            return
+        from PIL import Image as PILImage
+        from openpyxl.drawing.image import Image as XLImage
+
+        with PILImage.open(path) as im:
+            ow, oh = im.size
+
+        scale = min(max_w / ow, max_h / oh, 1.0)  # pas d'upscale
+        img = XLImage(str(path))
+        img.width  = max(1, int(round(ow * scale)))
+        img.height = max(1, int(round(oh * scale)))
+        ws.add_image(img, anchor_cell)
+        print(f"[xlsx_fill] Logo ajouté: {path.name} -> {anchor_cell} ({img.width}x{img.height}px)")
+    except Exception as e:
+        print(f"[xlsx_fill] ERREUR ajout logo {path} @ {anchor_cell}: {e}")
 
 
 # ======================================================================
@@ -303,24 +323,21 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         ws = wb.active  # fallback
 
-        # --- Mise en page : tenir sur 1 page A4 en portrait ---
+    # --- Mise en page: tenir sur 1 page A4 ---
     try:
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.page_setup.paperSize = ws.PAPERSIZE_A4
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 1
         ws.sheet_properties.pageSetUpPr.fitToPage = True
-    
-        # marges un peu réduites pour respirer
-        ws.page_margins.left   = 0.5
-        ws.page_margins.right  = 0.5
-        ws.page_margins.top    = 0.5
-        ws.page_margins.bottom = 0.5
-    
-        # (optionnel) zone d’impression – adapte si ton modèle diffère
+        ws.page_margins.left = ws.page_margins.right = 0.5
+        ws.page_margins.top = ws.page_margins.bottom = 0.5
+        # Optionnel si utile:
         # ws.print_area = "A1:U56"
     except Exception:
         pass
+    ception:
+            pass
 
      # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
     try:
@@ -366,54 +383,29 @@ def fill_fiche_7000L_xlsx(
         pass
 
         # --- Logos à gauche du titre (Symbiose + NIKO) ---
-    _add_logo(symbiose_path, anchor_cell="B3", max_w=160, max_h=52)  # même position que le modèle
-    _add_logo(niko_path,     anchor_cell="E3", max_w=120, max_h=44)  # juste à droite du logo Symbiose
+    root = _project_root()
+    
+    def _first_existing(paths):
+        for p in paths:
+            if p.exists():
+                return p
+        return None
+    
+    symbiose_path = _first_existing([
+        root / "assets" / "logo_symbiose.png",
+        root / "assets" / "signature" / "logo_symbiose.png",
+        root / "assets" / "Logo_Symbiose.png",
+    ])
+    niko_path = _first_existing([
+        root / "assets" / "NIKO_Logo.png",
+        root / "assets" / "niko_logo.png",
+        root / "assets" / "Niko_Logo.png",
+    ])
+    
+    # Positionnement comme le modèle : Symbiose en B3, NIKO juste à côté (E3)
+    _add_logo(ws, symbiose_path, anchor_cell="B3", max_w=160, max_h=52)
+    _add_logo(ws, niko_path,     anchor_cell="E3", max_w=120, max_h=44)
 
-    try:
-        from PIL import Image as PILImage
-        from openpyxl.drawing.image import Image as XLImage
-        root = _project_root()
-    
-        def _first_existing(paths):
-            for p in paths:
-                if p.exists():
-                    return p
-            return None
-    
-        # chemins candidats (noms/casse possibles)
-        symbiose_path = _first_existing([
-            root / "assets" / "logo_symbiose.png",
-            root / "assets" / "signature" / "logo_symbiose.png",
-            root / "assets" / "Logo_Symbiose.png",
-        ])
-        niko_path = _first_existing([
-            root / "assets" / "NIKO_Logo.png",
-            root / "assets" / "niko_logo.png",
-            root / "assets" / "Niko_Logo.png",
-        ])
-    
-        def _add_logo(path, anchor_cell: str, max_w: int, max_h: int):
-            if not path:
-                print(f"[xlsx_fill] Logo introuvable pour ancre {anchor_cell}")
-                return
-            try:
-                with PILImage.open(path) as im:
-                    ow, oh = im.size
-                scale = min(max_w/ow, max_h/oh, 1.0)   # pas d’upscale excessif
-                img = XLImage(str(path))
-                img.width  = max(1, int(round(ow*scale)))
-                img.height = max(1, int(round(oh*scale)))
-                ws.add_image(img, anchor_cell)
-                print(f"[xlsx_fill] Logo ajouté: {path.name} -> {anchor_cell} ({img.width}x{img.height}px)")
-            except Exception as e:
-                print(f"[xlsx_fill] ERREUR logo {path}: {e}")
-    
-        # 👉 essais visuels: Symbiose à B3, NIKO à F3 (ajuste si besoin)
-        _add_logo(symbiose_path, anchor_cell="B3", max_w=160, max_h=52)
-        _add_logo(niko_path,     anchor_cell="F3", max_w=120, max_h=44)
-    
-    except Exception as e:
-        print(f"[xlsx_fill] Bloc logos a échoué: {e}")
 
     # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
@@ -427,13 +419,9 @@ def fill_fiche_7000L_xlsx(
         except Exception:
             _set(ws, "A20", str(semaine_du))
 
-    # --- DDM en A10 + date dans la cellule immédiatement à droite (ex: B10) ---
-    # Force le label exactement en A10 (même si A10 fait partie d'une fusion)
+    # --- DDM en A10 + date à droite (B10) ---
     _set(ws, "A10", "DDM :")
-    
-    # Place la date dans la cellule à droite du label (B10), openpyxl gère la fusion via _safe_set_cell
-    _safe_set_cell(ws, 10, 2, ddm, number_format="DD/MM/YYYY")   # B10
-
+    _safe_set_cell(ws, 10, 2, ddm, number_format="DD/MM/YYYY")  # B10
 
     # --- Quantités de cartons par format -> ligne 15 (K/M/O/Q/S)
     k = m = o = q = s = 0  # K15, M15, O15, Q15, S15
