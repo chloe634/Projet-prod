@@ -346,21 +346,11 @@ def fill_fiche_7000L_xlsx(
         # ne bloque jamais l'export XLSX si l'image plante
         pass
 
-        # --- Logos à gauche du titre ---
+            # --- Logos à gauche du titre (Symbiose + NIKO) ---
     try:
         from PIL import Image as PILImage
         from openpyxl.drawing.image import Image as XLImage
         root = _project_root()
-    
-        # chemins possibles
-        symbiose_candidates = [
-            root / "assets" / "logo_symbiose.png",
-            root / "assets" / "signature" / "logo_symbiose.png",
-        ]
-        niko_candidates = [
-            root / "assets" / "NIKO_Logo.png",
-            root / "assets" / "niko_logo.png",  # au cas où
-        ]
     
         def _first_existing(paths):
             for p in paths:
@@ -368,30 +358,41 @@ def fill_fiche_7000L_xlsx(
                     return p
             return None
     
+        # chemins candidats (noms/casse possibles)
+        symbiose_path = _first_existing([
+            root / "assets" / "logo_symbiose.png",
+            root / "assets" / "signature" / "logo_symbiose.png",
+            root / "assets" / "Logo_Symbiose.png",
+        ])
+        niko_path = _first_existing([
+            root / "assets" / "NIKO_Logo.png",
+            root / "assets" / "niko_logo.png",
+            root / "assets" / "Niko_Logo.png",
+        ])
+    
         def _add_logo(path, anchor_cell: str, max_w: int, max_h: int):
             if not path:
+                print(f"[xlsx_fill] Logo introuvable pour ancre {anchor_cell}")
                 return
-            with PILImage.open(path) as im:
-                ow, oh = im.size
-            scale = min(max_w/ow, max_h/oh, 1.0)
-            img = XLImage(str(path))
-            img.width  = max(1, int(round(ow*scale)))
-            img.height = max(1, int(round(oh*scale)))
-            ws.add_image(img, anchor_cell)
+            try:
+                with PILImage.open(path) as im:
+                    ow, oh = im.size
+                scale = min(max_w/ow, max_h/oh, 1.0)   # pas d’upscale excessif
+                img = XLImage(str(path))
+                img.width  = max(1, int(round(ow*scale)))
+                img.height = max(1, int(round(oh*scale)))
+                ws.add_image(img, anchor_cell)
+                print(f"[xlsx_fill] Logo ajouté: {path.name} -> {anchor_cell} ({img.width}x{img.height}px)")
+            except Exception as e:
+                print(f"[xlsx_fill] ERREUR logo {path}: {e}")
     
-        # ancrages testés pour tomber visuellement au bon endroit (au-dessus et à gauche de "Produit préparé")
-        sym_path = _first_existing(symbiose_candidates)
-        niko_path = _first_existing(niko_candidates)
+        # 👉 essais visuels: Symbiose à B3, NIKO à F3 (ajuste si besoin)
+        _add_logo(symbiose_path, anchor_cell="B3", max_w=160, max_h=52)
+        _add_logo(niko_path,     anchor_cell="F3", max_w=120, max_h=44)
     
-        # ordre d’ajout = ordre d’empilement (ajoute Symbiose puis NIKO)
-        # ajuste les ancres si tu veux décaller finement
-        if sym_path:
-            _add_logo(sym_path, anchor_cell="B4", max_w=160, max_h=52)
-        if niko_path:
-            _add_logo(niko_path, anchor_cell="G4", max_w=120, max_h=48)
-    
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[xlsx_fill] Bloc logos a échoué: {e}")
+
 
         
     # --- Libellé DDM en A10 (lisible) ---
