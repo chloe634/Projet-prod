@@ -401,8 +401,8 @@ def fill_fiche_7000L_xlsx(
     ])
     
     # Positionnement comme le modèle : Symbiose en B3, NIKO juste à côté (E3)
-    _add_logo(ws, symbiose_path, anchor_cell="B1", max_w=160, max_h=48)
-    _add_logo(ws, niko_path,     anchor_cell="E1", max_w=120, max_h=40)
+    _add_logo(ws, symbiose_path, anchor_cell="B2", max_w=160, max_h=48)
+    _add_logo(ws, niko_path,     anchor_cell="E2", max_w=120, max_h=40)
 
 
     # --- H8 : goût (libellé Excel)
@@ -417,23 +417,32 @@ def fill_fiche_7000L_xlsx(
         except Exception:
             _set(ws, "A20", str(semaine_du))
 
-    # --- DDM : forcer "DDM :" en A10 + date en B10, en gérant les fusions ---
+    # --- DDM : garder A10:C10 fusionné avec "DDM :" + date en D10 ---
     try:
-        # Dé-fusionner toute zone qui touche A10:B10 pour éviter les écritures "fantômes"
+        from openpyxl.styles import Alignment, Font
+    
+        # 1) Nettoyer les fusions qui chevauchent A10:D10 (pour éviter les écritures bloquées)
         for rng in list(ws.merged_cells.ranges):
-            if not (rng.max_row < 10 or rng.min_row > 10 or rng.max_col < 1 or rng.min_col > 2):
+            if not (rng.max_row < 10 or rng.min_row > 10 or rng.max_col < 1 or rng.min_col > 4):
                 ws.unmerge_cells(rng.coord)
     
-        ws["A10"].value = "DDM :"
-        ws["B10"].number_format = "DD/MM/YYYY"
-        ws["B10"].value = ddm
+        # 2) Re-fusionner A10:C10 et écrire le libellé
+        ws.merge_cells("A10:C10")
+        _safe_set_cell(ws, 10, 1, "DDM :")  # A10 (ancre de la fusion)
+        ws["A10"].alignment = Alignment(vertical="center", horizontal="left")
+        try:
+            ws["A10"].font = Font(bold=True)
+        except Exception:
+            pass
     
-        # (on laisse A10 et B10 non fusionnés pour que le libellé soit toujours visible)
+        # 3) Mettre la date à droite de la fusion, en D10
+        _safe_set_cell(ws, 10, 4, ddm, number_format="DD/MM/YYYY")  # D10
     except Exception:
-        # fallback robuste si jamais
-        _set(ws, "A10", "DDM :")
-        _safe_set_cell(ws, 10, 2, ddm, number_format="DD/MM/YYYY")
-    
+        # Fallback robuste
+        ws.merge_cells("A10:C10")
+        _safe_set_cell(ws, 10, 1, "DDM :")
+        _safe_set_cell(ws, 10, 4, ddm, number_format="DD/MM/YYYY")
+
 
     # --- Quantités de cartons par format -> ligne 15 (K/M/O/Q/S)
     k = m = o = q = s = 0  # K15, M15, O15, Q15, S15
