@@ -302,6 +302,57 @@ def fill_fiche_7000L_xlsx(
             break
     if ws is None:
         ws = wb.active  # fallback
+    
+    # --- Libellé DDM en A10 ---
+    _set(ws, "A10", "DDM : ")
+
+    # --- Logos en haut à gauche du titre (sans déformation) ---
+    try:
+        from PIL import Image as PILImage
+        from openpyxl.drawing.image import Image as XLImage
+        root = _project_root()
+
+        # on accepte 2 emplacements possibles pour le logo Symbiose
+        symbiose_candidates = [
+            root / "assets" / "logo_symbiose.png",
+            root / "assets" / "signature" / "logo_symbiose.png",
+        ]
+        niko_candidates = [
+            root / "assets" / "NIKO_Logo.png",
+        ]
+
+        def _first_existing(paths):
+            for p in paths:
+                if p.exists():
+                    return p
+            return None
+
+        symbiose_path = _first_existing(symbiose_candidates)
+        niko_path     = _first_existing(niko_candidates)
+
+        # (anchor, max_width_px, max_height_px)
+        placements = []
+        if symbiose_path:
+            placements.append((symbiose_path, "B4", 140, 48))   # un peu plus large, bas sur 48 px
+        if niko_path:
+            placements.append((niko_path, "E4", 110, 48))
+
+        for path, anchor, max_w, max_h in placements:
+            try:
+                with PILImage.open(path) as im:
+                    ow, oh = im.size
+                scale = min(max_w / ow, max_h / oh, 1.0)  # pas d'upscale au-delà de 1.0
+                img = XLImage(str(path))
+                img.width  = max(1, int(round(ow * scale)))
+                img.height = max(1, int(round(oh * scale)))
+                ws.add_image(img, anchor)
+            except Exception:
+                # on ignore cet élément si un logo pose souci
+                pass
+    except Exception:
+        # jamais bloquant pour l'export
+        pass
+
 
                      # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
     try:
