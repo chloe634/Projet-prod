@@ -302,38 +302,7 @@ def fill_fiche_7000L_xlsx(
             break
     if ws is None:
         ws = wb.active  # fallback
-    # --- Forcer le libellé "DDM :" en A10 (écrase formule/fusions) ---
-    try:
-        # 1) Si A10 est dans une zone fusionnée, on défusionne d'abord
-        hit = None
-        for rng in list(ws.merged_cells.ranges):
-            if rng.min_row <= 10 <= rng.max_row and rng.min_col <= 1 <= rng.max_col:
-                hit = rng
-                break
-        if hit is not None:
-            ws.unmerge_cells(hit.coord)
-    
-        # 2) Écrire le texte en mode "texte" (pas de date)
-        cell = ws["A10"]
-        cell.value = "DDM : "
-        cell.number_format = "@"  # format texte
-        try:
-            cell.data_type = "s"
-        except Exception:
-            pass
-    
-        # 3) Un peu de largeur pour éviter les ########
-        colA = ws.column_dimensions["A"]
-        if not colA.width or colA.width < 12:
-            colA.width = 12
-    
-        # (optionnel) petit style
-        # from openpyxl.styles import Font, Alignment
-        # cell.font = Font(bold=True)
-        # cell.alignment = Alignment(horizontal="left", vertical="center")
-    except Exception:
-        pass
-
+   
      # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
     try:
         from PIL import Image as PILImage  # Pillow requis
