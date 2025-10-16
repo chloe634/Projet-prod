@@ -394,9 +394,21 @@ def fill_fiche_7000L_xlsx(
         pass
 
         
-    # --- Libellé DDM en A10 ---
+    # --- Libellé DDM en A10 (lisible) ---
     _set(ws, "A10", "DDM : ")
-    
+    try:
+        # élargit légèrement la colonne A pour éviter les '##########'
+        colA = ws.column_dimensions["A"]
+        if not colA.width or colA.width < 12:
+            colA.width = 12
+        # optionnel: fusionne A10:B10 si ton template est serré
+        try:
+            ws.merge_cells(start_row=10, start_column=1, end_row=10, end_column=2)  # A10:B10
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     # --- H8 : goût (libellé Excel)
     _set(ws, "H8", _to_excel_label(gout1) or "")
 
