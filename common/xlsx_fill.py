@@ -303,38 +303,47 @@ def fill_fiche_7000L_xlsx(
     if ws is None:
         ws = wb.active  # fallback
 
-          # --- Schéma cuves : ancrage fixe & taille fixe (comme sur le screenshot) ---
+              # --- Schéma cuves : ancrage fixe + mise à l'échelle proportionnelle (pas d'étirement) ---
     try:
+        from PIL import Image as PILImage  # Pillow requis
+        from openpyxl.drawing.image import Image as XLImage
+
         root = _project_root()
         base = Path(template_path).stem.lower()
 
-        # Réglages par modèle (tu peux affiner anchor/width/height si besoin)
-        IMAGE_CFG = {
-            "grande": {
-                "file": "assets/schema_cuve_orange.png",
-                "anchor": "R30",   # cellule d’ancrage (coin haut-gauche)
-                "width":  420,     # px
-                "height": 360,     # px
-            },
-            "petite": {
-                "file": "assets/schema_cuve_bleu.png",
-                "anchor": "R30",
-                "width":  420,
-                "height": 360,
-            },
-        }
+        # Fichier selon le modèle
+        if "grande" in base:
+            img_file = root / "assets" / "schema_cuve_orange.png"
+        elif "petite" in base:
+            img_file = root / "assets" / "schema_cuve_bleu.png"
+        else:
+            img_file = root / "assets" / "schema_cuve_orange.png"
 
-        key = "grande" if "grande" in base else ("petite" if "petite" in base else "grande")
-        cfg = IMAGE_CFG[key]
-        img_path = (root / cfg["file"])
+        if img_file.exists():
+            # 1) lis la taille d'origine (px)
+            with PILImage.open(img_file) as im:
+                orig_w, orig_h = im.size
 
-        if img_path.exists():
-            img = XLImage(str(img_path))   # nécessite Pillow
-            img.width  = cfg["width"]
-            img.height = cfg["height"]
-            ws.add_image(img, cfg["anchor"])
-        # sinon : on ignore (ne bloque pas l’export)
+            # 2) cadre max (ajuste si besoin)
+            # -> sur ta capture, une image ~300-340 px de large passe bien
+            MAX_W, MAX_H = 340, 320   # px
+
+            # 3) scale factor pour conserver le ratio
+            scale = min(MAX_W / orig_w, MAX_H / orig_h, 1.0)
+            out_w = int(round(orig_w * scale))
+            out_h = int(round(orig_h * scale))
+
+            # 4) on ancre et on applique la taille SANS déformation
+            #    (change "T30" pour décaler : Q/R/S = gauche/droite ; 28/32 = haut/bas)
+            anchor_cell = "T30"
+
+            xl_img = XLImage(str(img_file))
+            xl_img.width  = out_w
+            xl_img.height = out_h
+            ws.add_image(xl_img, anchor_cell)
+        # sinon on ignore en silence
     except Exception:
+        # ne bloque jamais l'export XLSX si l'image plante
         pass
 
     # --- H8 : goût (libellé Excel)
