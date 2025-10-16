@@ -510,6 +510,29 @@ def fill_fiche_7000L_xlsx(
     _safe_set_cell(ws, 15, 15, int(o))  # O15 : 75cL x6
     _safe_set_cell(ws, 15, 17, int(q))  # Q15 : 75cL x4
     _safe_set_cell(ws, 15, 19, int(s))  # S15 : 75cL NIKO x6 (saft)
+    
+    # --- Saut de page : forcer "Date de la production" en tête de page suivante ---
+    try:
+        import re
+        from openpyxl.worksheet.pagebreak import Break, PageBreak
+    
+        def _find_row(ws, pattern: str):
+            rx = re.compile(pattern, flags=re.I)
+            for row in ws.iter_rows(values_only=False):
+                for cell in row:
+                    v = cell.value
+                    if isinstance(v, str) and rx.search(v):
+                        return cell.row
+            return None
+    
+        # repère la ligne de "Date de la production"
+        row_date_prod = _find_row(ws, r"\bdate\s+de\s+la\s+production\b")
+        if row_date_prod:
+            # on vide d'éventuels anciens sauts puis on crée un saut juste avant
+            ws.row_breaks = PageBreak()
+            ws.row_breaks.append(Break(id=row_date_prod - 1))
+    except Exception as e:
+        print(f"[xlsx_fill] Saut de page manuel non appliqué: {e}")
 
     # Sauvegarde en mémoire
     bio = io.BytesIO()
