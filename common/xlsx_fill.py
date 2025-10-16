@@ -322,18 +322,28 @@ def fill_fiche_7000L_xlsx(
             break
     if ws is None:
         ws = wb.active  # fallback
-
-    # --- Mise en page: tenir sur 1 page A4 ---
+        
+    # --- Mise en page : remplir toute la page ---
     try:
+        # 1) Définir la zone d’impression exacte de ta fiche (à ajuster si besoin)
+        #    (prends le rectangle plein de ton modèle 7000L)
+        ws.print_area = "A1:U56"   # ← ajuste si ton modèle est plus grand/petit
+    
+        # 2) Marges raisonnables
+        ws.page_margins.left = ws.page_margins.right = 0.4
+        ws.page_margins.top  = ws.page_margins.bottom = 0.5
+    
+        # 3) Portrait A4
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
-        ws.page_setup.paperSize = ws.PAPERSIZE_A4
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 1
-        ws.sheet_properties.pageSetUpPr.fitToPage = True
-        ws.page_margins.left = ws.page_margins.right = 0.5
-        ws.page_margins.top = ws.page_margins.bottom = 0.5
-        # Optionnel si utile:
-        # ws.print_area = "A1:U56"
+        ws.page_setup.paperSize   = ws.PAPERSIZE_A4
+    
+        # 4) Désactiver le fit-to-page (qui ne grossit pas), et forcer un zoom > 100%
+        ws.sheet_properties.pageSetUpPr.fitToPage = False
+        ws.page_setup.fitToWidth  = 0
+        ws.page_setup.fitToHeight = 0
+    
+        # 5) Zoom à ~135% (entre 10 et 400). Ajuste jusqu’à ce que ce soit nickel.
+        ws.page_setup.scale = 135
     except Exception:
         pass
 
