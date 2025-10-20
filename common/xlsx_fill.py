@@ -456,60 +456,79 @@ def fill_fiche_7000L_xlsx(
         _safe_set_cell(ws, 10, 1, "DDM :")
         _safe_set_cell(ws, 10, 4, ddm, number_format="DD/MM/YYYY")
 
-    # --- Quantités de cartons par format -> ligne 15 (K/M/O/Q/S)
-    k = m = o = q = s = 0  # K15, M15, O15, Q15, S15
-
+    # --- Quantités de cartons par format -> ligne 15 (K/M/O/Q/S/U) ---
+    # Mapping voulu :
+    # - 33 cL EN (Water kefir)      -> K15 (K:L)
+    # - 33 cL FR SANS NIKO          -> M15 (M:N)
+    # - 33 cL FR AVEC NIKO          -> O15 (O:P)
+    # - 75 cL x6 SANS NIKO          -> Q15 (Q:R)
+    # - 75 cL x4 SANS NIKO          -> S15 (S:T)
+    # - 75 cL x6 AVEC NIKO          -> U15 (U:V)
+    
+    k_33_en = 0
+    m_33_fr_no = 0
+    o_33_fr_niko = 0
+    q_75x6 = 0
+    s_75x4 = 0
+    u_75x6_niko = 0
+    
     if isinstance(df_min, pd.DataFrame) and not df_min.empty:
-        # Filtre goût principal
+        # Filtre sur le goût choisi (colonne GoutCanon du tableau affiché)
         dff = df_min.copy()
         if "GoutCanon" in dff.columns:
             dff = dff[dff["GoutCanon"].astype(str).str.strip() == str(gout1 or "").strip()]
-
+    
         # Colonne "Cartons à produire ..."
-        col_cart = None
-        for ccc in dff.columns:
-            if "Cartons à produire" in str(ccc):
-                col_cart = ccc
-                break
-
+        col_cart = next((c for c in dff.columns if "Cartons à produire" in str(c)), None)
+    
         if col_cart and not dff.empty:
             for _, r0 in dff.iterrows():
                 qty = pd.to_numeric(r0.get(col_cart), errors="coerce")
                 qty = int(qty) if pd.notna(qty) else 0
                 if qty <= 0:
                     continue
-
+    
                 prod = str(r0.get("Produit", "")).upper()
-                # Détection format & pack
-                nb, volL = _parse_format_from_stock(str(r0.get("Stock", "")))
+                stock = str(r0.get("Stock", ""))
+    
+                nb, volL = _parse_format_from_stock(stock)
                 if nb is None or volL is None:
+                    # fallback si "Stock" est atypique : on essaie depuis 'Produit'
                     m_nb = re.search(r"x\s*(\d+)", prod)
                     m_vol = re.search(r"(\d+(?:[.,]\d+)?)\s*cL", prod, flags=re.I)
                     nb = int(m_nb.group(1)) if m_nb else nb
-                    volL = (float(m_vol.group(1).replace(",", "."))/100.0) if m_vol else volL
-
-                # Répartition vers les colonnes ligne 15
-                if volL and abs(volL - 0.33) < 1e-6 and (nb == 12):
-                    if "NIKO" in prod:
-                        m += qty   # 33 cL NIKO -> M15
+                    volL = (float(m_vol.group(1).replace(",", ".")) / 100.0) if m_vol else volL
+    
+                has_niko = "NIKO" in prod
+                is_33cl = (volL is not None) and abs(volL - 0.33) < 1e-6 and nb == 12
+                is_75cl = (volL is not None) and abs(volL - 0.75) < 1e-6
+                is_english = "WATER KEFIR" in prod  # distingue EN vs FR sur tes libellés
+    
+                if is_33cl:
+                    if is_english:
+                        k_33_en += qty            # -> K15
                     else:
-                        k += qty   # 33 cL France -> K15
-                elif volL and abs(volL - 0.75) < 1e-6:
-                    if nb == 6:
-                        if "NIKO" in prod:
-                            s += qty  # 75 cL NIKO x6 -> S15
+                        if has_niko:
+                            o_33_fr_niko += qty   # -> O15
                         else:
-                            o += qty  # 75 cL x6 -> O15
-                    elif nb == 4:
-                        q += qty      # 75 cL x4 -> Q15
-                # autres formats ignorés (pas de colonne dédiée)
+                            m_33_fr_no += qty     # -> M15
+                elif is_75cl:
+                    if nb == 6:
+                        if has_niko:
+                            u_75x6_niko += qty    # -> U15
+                        else:
+                            q_75x6 += qty         # -> Q15
+                    elif nb == 4 and not has_niko:
+                        s_75x4 += qty             # -> S15
+    
+    # Écritures (ligne 15 ; on vise l’ancre des fusions)
+    _safe_set_cell(ws, 15, 11, int(k_33_en))      # K15 (K:L)
+    _safe_set_cell(ws, 15, 13, int(m_33_fr_no))   # M15 (M:N)
+    _safe_set_cell(ws, 15, 15, int(o_33_fr_niko)) # O15 (O:P)
+    _safe_set_cell(ws, 15, 17, int(q_75x6))       # Q15 (Q:R)
+    _safe_set_cell(ws, 15, 19, int(s_75x4))       # S15 (S:T)
+    _safe_set_cell(ws, 15, 21, int(u_75x6_niko))  # U15 (U:V)
 
-    # Écritures (ligne 15)
-    _safe_set_cell(ws, 15, 11, int(k))  # K15 : 33cL France x12
-    _safe_set_cell(ws, 15, 13, int(m))  # M15 : 33cL NIKO x12
-    _safe_set_cell(ws, 15, 15, int(o))  # O15 : 75cL x6
-    _safe_set_cell(ws, 15, 17, int(q))  # Q15 : 75cL x4
-    _safe_set_cell(ws, 15, 19, int(s))  # S15 : 75cL NIKO x6 (saft)
     
     # --- Saut de page : forcer "Date de la production" en tête de page suivante ---
     try:
