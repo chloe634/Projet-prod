@@ -12,6 +12,7 @@ pdfplumber
 pypdf
 tomli
 PyGithub>=1.59
+requests
 
 
 
