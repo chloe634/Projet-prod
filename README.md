@@ -17,6 +17,8 @@ Aucune importation locale n'est nécessaire.
 pip install -r requirements.txt
 streamlit run app.py
 
+--
+
 ## 🚀 Déploiement sur Kinsta
 ### Fichiers requis
 - `Procfile` (à la racine) :
