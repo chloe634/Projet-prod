@@ -10,7 +10,7 @@ Aucune importation locale n'est nécessaire.
 - `common/data.py` (config & chemins)
 - `core/optimizer.py` (algorithmes)
 - `data/production.xlsx`, `data/flavor_map.csv`
-- `assets/` (images produits)
+- `assets/` (images produits & modèles)
 
 ## Lancer en local (optionnel)
 ```bash
