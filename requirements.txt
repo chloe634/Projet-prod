@@ -13,7 +13,7 @@ pypdf
 tomli
 PyGithub>=1.59
 requests
-
+psycopg2-binary>=2.9
 
 
 
