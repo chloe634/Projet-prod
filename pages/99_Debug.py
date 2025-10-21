@@ -2,6 +2,18 @@
 import pathlib, traceback
 import streamlit as st
 
+
+from common.db import run_sql
+
+st.title("Test de connexion à la base de données")
+
+try:
+    row = run_sql("select now() as server_time;").mappings().first()
+    st.success(f"✅ Connexion DB OK — serveur : {row['server_time']}")
+except Exception as e:
+    st.error(f"❌ Connexion DB KO : {e}")
+
+
 st.set_page_config(page_title="Debug pages", page_icon="🛠️", layout="wide")
 st.title("🛠️ Debug des pages Streamlit")
 
