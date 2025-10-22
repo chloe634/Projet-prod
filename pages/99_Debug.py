@@ -1,22 +1,32 @@
 # pages/99_Debug.py
-import pathlib, traceback
+import pathlib
+import traceback
 import streamlit as st
 
+# ⚠️ Toujours configurer la page AVANT toute autre commande Streamlit
+st.set_page_config(page_title="Debug pages", page_icon="🛠️", layout="wide")
 
-from common.db import run_sql
+# On utilise notre fabrique de connexion unique
+from db.conn import run_sql, debug_dsn, whoami
 
-st.title("Test de connexion à la base de données")
+st.title("🛠️ Debug des pages Streamlit")
 
+# --- Section debug DB -------------------------------------------------------
+st.subheader("Test de connexion à la base de données")
 try:
-    row = run_sql("select now() as server_time;").mappings().first()
+    row = run_sql("SELECT now() AS server_time;").mappings().first()
     st.success(f"✅ Connexion DB OK — serveur : {row['server_time']}")
 except Exception as e:
     st.error(f"❌ Connexion DB KO : {e}")
 
+# Infos utiles (sans secrets)
+st.caption(f"DB debug: {debug_dsn()}")
+st.caption(f"DB user (via conn.py): {whoami()}")
 
-st.set_page_config(page_title="Debug pages", page_icon="🛠️", layout="wide")
-st.title("🛠️ Debug des pages Streamlit")
+st.divider()
+# ---------------------------------------------------------------------------
 
+st.subheader("Compilation des pages Streamlit")
 root = pathlib.Path(__file__).resolve().parents[1]  # racine du projet
 pages = sorted((root / "pages").glob("*.py"))
 
