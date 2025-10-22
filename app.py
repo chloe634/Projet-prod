@@ -7,6 +7,11 @@ import pandas as pd
 import streamlit as st
 import psycopg2
 import os
+import streamlit as st
+from db import ping  # adapte l'import si nécessaire
+
+ok, msg = ping()
+st.write(msg)
 
 st.title("Test de connexion à la base de données")
 
