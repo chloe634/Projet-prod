@@ -40,6 +40,9 @@ try:
 except Exception as e:
     st.error(f"❌ Erreur de connexion : {e}")
 
+from db.conn import whoami
+st.caption(f"DB user (via conn.py): {whoami()}")
+
 
 # ---------- PRE-FLIGHT : détecte les erreurs de syntaxe dans pages/*.py ----------
 def _preflight_pages():
