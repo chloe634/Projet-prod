@@ -9,6 +9,24 @@ import psycopg2
 import os
 import streamlit as st
 from db.conn import ping
+import streamlit as st
+st.set_page_config(page_title="Symbiose", layout="wide")
+
+# --- DEBUG DB, n'empêche jamais l'app de démarrer ---
+try:
+    from db.conn import ping, debug_dsn, _current_dsn
+    ok, msg = ping()
+    st.write("Test de connexion à la base de données")
+    st.success(msg) if ok else st.error(msg)
+    st.caption(f"DB debug: {debug_dsn()}")
+    with st.expander("Voir DSN (masqué)", expanded=False):
+        st.code(_current_dsn())
+except Exception as e:
+    import traceback
+    st.error(f"DB init failed: {e}")
+    st.text("".join(traceback.format_exc()))
+# -----------------------------------------------------
+
 
 ok, msg = ping()
 st.write(msg)
