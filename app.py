@@ -1,4 +1,14 @@
 # app.py — Accueil + préflight syntaxe des pages
+# --- Defaults libpq pour toute connexion implicite (anti-root) ---
+import os
+os.environ.setdefault("PGUSER",     os.getenv("DB_USERNAME", ""))
+os.environ.setdefault("PGPASSWORD", os.getenv("DB_PASSWORD", ""))
+os.environ.setdefault("PGHOST",     os.getenv("DB_HOST", ""))
+os.environ.setdefault("PGPORT",     os.getenv("DB_PORT", "5432"))
+os.environ.setdefault("PGDATABASE", os.getenv("DB_DATABASE") or os.getenv("DB_NAME", ""))
+os.environ.setdefault("PGSSLMODE",  os.getenv("DB_SSLMODE", "disable"))
+# -----------------------------------------------------------------
+
 import pathlib, traceback
 import streamlit as st
 import pandas as pd
