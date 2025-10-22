@@ -7,8 +7,7 @@ import pandas as pd
 import streamlit as st
 import psycopg2
 import os
-import streamlit as st
-from db.conn import ping
+
 import streamlit as st
 st.set_page_config(page_title="Symbiose", layout="wide")
 
@@ -26,12 +25,6 @@ except Exception as e:
     st.error(f"DB init failed: {e}")
     st.text("".join(traceback.format_exc()))
 # -----------------------------------------------------
-
-
-ok, msg = ping()
-st.write(msg)
-
-st.title("Test de connexion à la base de données")
 
 try:
     conn = psycopg2.connect(
