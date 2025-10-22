@@ -90,3 +90,25 @@ def ping():
         return True, "✅ DB OK (SELECT 1)"
     except Exception as e:
         return False, f"❌ Erreur de connexion : {e}"
+
+
+def _current_dsn() -> str:
+    """DSN complet effectivement utilisé (avec mot de passe masqué)."""
+    from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+    url = _build_url()
+    u = urlparse(url)
+    # masque le mot de passe
+    netloc = u.netloc
+    if "@" in netloc and ":" in netloc.split("@")[0]:
+        user_pw, hostpart = netloc.split("@", 1)
+        user = user_pw.split(":", 1)[0]
+        netloc = f"{user}:***@{hostpart}"
+    return urlunparse((u.scheme, netloc, u.path, u.params, u.query, u.fragment))
+
+def debug_dsn() -> str:
+    """Petit résumé sans secret: host + sslmode."""
+    from urllib.parse import urlparse, parse_qsl
+    u = urlparse(_build_url())
+    qs = dict(parse_qsl(u.query))
+    return f"host={u.hostname} | sslmode={qs.get('sslmode', '<none>')}"
+
