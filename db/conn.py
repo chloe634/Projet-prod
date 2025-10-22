@@ -33,10 +33,20 @@ def _with_param(url: str, key: str, value: str) -> str:
     return urlunparse((u.scheme, u.netloc, u.path, u.params, new_query, u.fragment))
 
 def _build_url() -> str:
-    # 1) Si Kinsta fournit une URL complète
+    # 0) Si l'admin force un sslmode via l'env, on ignore DB_URL et on reconstruit l'URL
+    forced_ssl = os.getenv("DB_SSLMODE")
+    if forced_ssl:
+        host = os.getenv("DB_HOST") or os.getenv("POSTGRES_HOST")
+        port = os.getenv("DB_PORT") or os.getenv("POSTGRES_PORT") or "5432"
+        name = os.getenv("DB_DATABASE") or os.getenv("DB_NAME") or os.getenv("POSTGRES_DB")
+        user = os.getenv("DB_USERNAME") or os.getenv("DB_USER") or os.getenv("POSTGRES_USER")
+        pwd  = os.getenv("DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD")
+        return f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{name}?sslmode={forced_ssl}"
+
+    # 1) Sinon, si Kinsta fournit une URL complète
     raw = os.getenv("DB_URL") or os.getenv("DATABASE_URL")
     if raw:
-        url = _normalize_scheme(raw)
+        url = _normalize_scheme(raw)  # postgres:// -> postgresql+psycopg2://
         host = urlparse(url).hostname
         if _is_internal(host):
             # Endpoint interne Kinsta -> pas d’SSL
@@ -47,7 +57,7 @@ def _build_url() -> str:
                 url = _with_param(url, "sslmode", "require")
         return url
 
-    # 2) Sinon, reconstruire à partir des morceaux (gère plusieurs conventions)
+    # 2) Fallback : reconstruire à partir des morceaux
     host = os.getenv("DB_HOST") or os.getenv("POSTGRES_HOST")
     port = os.getenv("DB_PORT") or os.getenv("POSTGRES_PORT") or "5432"
     name = os.getenv("DB_DATABASE") or os.getenv("DB_NAME") or os.getenv("POSTGRES_DB")
@@ -55,9 +65,7 @@ def _build_url() -> str:
     pwd  = os.getenv("DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD")
 
     # Choix du sslmode par défaut selon interne/public
-    sslmode = os.getenv("DB_SSLMODE")
-    if not sslmode:
-        sslmode = "disable" if _is_internal(host) else "require"
+    sslmode = "disable" if _is_internal(host) else "require"
 
     return f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{name}?sslmode={sslmode}"
 
