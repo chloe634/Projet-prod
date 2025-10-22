@@ -8,7 +8,7 @@ import streamlit as st
 import psycopg2
 import os
 import streamlit as st
-from db import ping  # adapte l'import si nécessaire
+from db.conn import ping
 
 ok, msg = ping()
 st.write(msg)
