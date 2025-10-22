@@ -112,3 +112,10 @@ def debug_dsn() -> str:
     qs = dict(parse_qsl(u.query))
     return f"host={u.hostname} | sslmode={qs.get('sslmode', '<none>')}"
 
+def whoami() -> str:
+    # retourne l'utilisateur que notre DSN utilise
+    from urllib.parse import urlparse
+    u = urlparse(_build_url())
+    user = (u.username or "<none>")
+    return f"user={user}"
+
