@@ -111,8 +111,11 @@ if excluded_products:
     df_in_filtered = df_in.loc[~mask_excl_input].copy()
 else:
     df_in_filtered = df_in.copy()
-    
+
 # ---------------- Calculs ----------------
+# Nombre de goûts effectif : on garantit que tous les 'forcés' rentrent
+effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_gouts
+
 (
     df_min,
     cap_resume,
@@ -131,9 +134,10 @@ else:
     exclude_list=excluded_gouts,
 )
 
-# Affiche la note d’ajustement si présente (ex: contrainte Infusion/Kéfir)
+# ✅ Affiche la note d’ajustement (ex: contrainte Infusion/Kéfir)
 if isinstance(note_msg, str) and note_msg.strip():
     st.info(note_msg)
+
 
 # ---------------- KPIs ----------------
 total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum())
