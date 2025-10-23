@@ -65,6 +65,28 @@ with st.sidebar:
     st.subheader("Filtres")
     all_gouts = sorted(pd.Series(df_in.get("GoutCanon", pd.Series(dtype=str))).dropna().astype(str).str.strip().unique())
     excluded_gouts = st.multiselect("🚫 Exclure certains goûts", options=all_gouts, default=[])
+    
+    # 🔥 NOUVEAU : exclusion précise par produit (Produit + Stock)
+    # On la place juste sous "Exclure certains goûts"
+    try:
+        df_preview = df_in.copy()
+        # Clef lisible combinant Goût, Produit et Stock
+        df_preview["Produit complet"] = df_preview.apply(
+            lambda r: f"{r.get('Produit','').strip()} — {r.get('Stock','').strip()}"
+            if pd.notna(r.get('Stock')) else r.get('Produit','').strip(),
+            axis=1
+        )
+    
+        product_options = sorted(df_preview["Produit complet"].dropna().unique().tolist())
+    except Exception:
+        product_options = []
+    
+    excluded_products = st.multiselect(
+        "🚫 Exclure certains produits (Produit + Stock)",
+        options=product_options,
+        default=[],
+        help="Exclut les produits précis (ex : Kéfir Gingembre — Carton de 12 Bouteilles – 0,33 L)"
+    )
 
     # 🔥 NOUVEAU : forcer certains goûts
     forced_gouts = st.multiselect(
@@ -102,108 +124,25 @@ effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_go
     exclude_list=excluded_gouts,
 )
 
+# ---------------- Filtrage des produits exclus ----------------
+if excluded_products:
+    mask_excl = df_min.apply(
+        lambda r: f"{r.get('Produit','').strip()} — {r.get('Stock','').strip()}" in excluded_products,
+        axis=1
+    )
+    df_min = df_min.loc[~mask_excl].copy()
+
 # Affiche la note d’ajustement si présente (ex: contrainte Infusion/Kéfir)
 if isinstance(note_msg, str) and note_msg.strip():
     st.info(note_msg)
 
-# ---------------- Exclusions format (famille + format / goût + format) ----------------
-import re
-
-def _parse_family(product: str) -> str:
-    # "NIKO - kéfir de fruits Mangue Passion" -> "NIKO"
-    if " - " in product:
-        return product.split(" - ", 1)[0].strip()
-    # sinon, on prend le premier ou deux premiers tokens utiles (ex "Water kefir")
-    tokens = str(product).strip().split()
-    if len(tokens) >= 2 and " ".join(tokens[:2]).lower() in {"water kefir"}:
-        return " ".join(tokens[:2]).title()
-    return tokens[0].title() if tokens else ""
-
-def _parse_pack_and_volume(stock: str):
-    """
-    Exemples:
-    - "Carton de 12 Bouteilles - 0.33L"
-    - "Carton de 6 Bouteilles 75cl Verralia - 0.75L"
-    - "Pack de 4 Bouteilles 75cl SAFT - 0.75L"
-    -> retourne (pack_size:int or None, volume_cl:int or None)
-    """
-    s = str(stock)
-    m_pack = re.search(r'\b(\d+)\b', s)
-    pack_size = int(m_pack.group(1)) if m_pack else None
-
-    m_vol_l = re.search(r'(\d+(?:[.,]\d+)?)\s*L\b', s, flags=re.IGNORECASE)
-    volume_cl = None
-    if m_vol_l:
-        volume_cl = int(round(float(m_vol_l.group(1).replace(',', '.')) * 100))
-    else:
-        m_vol_cl = re.search(r'(\d+)\s*cL\b', s, flags=re.IGNORECASE)
-        if m_vol_cl:
-            volume_cl = int(m_vol_cl.group(1))
-
-    return pack_size, volume_cl
-
-def _add_format_keys(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["family"] = df["Produit"].astype(str).apply(_parse_family)
-    parsed = df["Stock"].astype(str).apply(_parse_pack_and_volume)
-    df["pack_size"] = parsed.apply(lambda x: x[0])
-    df["volume_cl"] = parsed.apply(lambda x: x[1])
-    df["family_format_key"] = df.apply(
-        lambda r: f'{r["family"]} | {r["pack_size"]}x{r["volume_cl"]}cl', axis=1
-    )
-    # on utilise GoutCanon (déjà présent dans df_min)
-    df["flavor_format_key"] = df.apply(
-        lambda r: f'{r["GoutCanon"]} | {r["pack_size"]}x{r["volume_cl"]}cl', axis=1
-    )
-    return df
-
-# Construire les clés sur le résultat de compute_plan (df_min)
-df_min_keys = _add_format_keys(df_min)
-
-st.markdown("### Exclusions supplémentaires (format)")
-with st.expander("Exclure des formats de production (sans modifier les calculs)"):
-    family_opts = sorted(df_min_keys["family_format_key"].dropna().unique().tolist())
-    flavor_opts = sorted(df_min_keys["flavor_format_key"].dropna().unique().tolist())
-
-    st.session_state.setdefault("excl_family_format", [])
-    st.session_state.setdefault("excl_flavor_format", [])
-
-    st.session_state["excl_family_format"] = st.multiselect(
-        "🚫 Exclure par **famille + format** (ex.: `NIKO | 12x33cl` → exclut tous les goûts NIKO en 12x33cl)",
-        options=family_opts,
-        default=st.session_state["excl_family_format"],
-        key="ms_excl_family_format",
-    )
-
-    st.session_state["excl_flavor_format"] = st.multiselect(
-        "🚫 Exclure par **goût + format** (ex.: `Mangue Passion | 12x33cl` → exclut seulement ce goût en 12x33cl)",
-        options=flavor_opts,
-        default=st.session_state["excl_flavor_format"],
-        key="ms_excl_flavor_format",
-    )
-
-    ccl, ccr = st.columns(2)
-    if ccl.button("Vider les exclusions"):
-        st.session_state["excl_family_format"] = []
-        st.session_state["excl_flavor_format"] = []
-
-# Appliquer le filtre (post-calcul)
-_mask_excl = (
-    df_min_keys["family_format_key"].isin(st.session_state["excl_family_format"]) |
-    df_min_keys["flavor_format_key"].isin(st.session_state["excl_flavor_format"])
-)
-df_min_final = df_min_keys.loc[~_mask_excl].copy()
-
-# NOTE : à partir d’ici, on utilise df_min_final pour KPIs / affichage / sauvegarde
-
-
 # ---------------- KPIs ----------------
-total_btl = int(pd.to_numeric(df_min_final.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum()) if "Bouteilles à produire (arrondi)" in df_min_final.columns else 0
-total_vol = float(pd.to_numeric(df_min_final.get("Volume produit arrondi (hL)"), errors="coerce").fillna(0).sum()) if "Volume produit arrondi (hL)" in df_min_final.columns else 0.0
+total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum())
+total_vol = float(pd.to_numeric(df_min.get("Volume produit arrondi (hL)"), errors="coerce").fillna(0).sum())
 c1, c2, c3 = st.columns(3)
 with c1: kpi("Total bouteilles à produire", f"{total_btl:,}".replace(",", " "))
 with c2: kpi("Volume total (hL)", f"{total_vol:.2f}")
-with c3: kpi("Lignes après exclusions", f"{len(df_min_final)}")
+with c3: kpi("Lignes après exclusions", f"{len(df_min)}")
 
 
 # ---------------- Images + tableau principal ----------------
@@ -211,7 +150,7 @@ def sku_guess(name: str):
     m = re.search(r"\b([A-Z]{3,6}-\d{2,3})\b", str(name))
     return m.group(1) if m else None
 
-df_view = df_min_final.copy()
+df_view = df_min.copy()
 df_view["SKU?"] = df_view["Produit"].apply(sku_guess)
 df_view["__img_path"] = [
     find_image_path(images_dir, sku=sku_guess(p), flavor=g)
@@ -259,13 +198,13 @@ date_ddm = date_debut + _dt.timedelta(days=365)
 
 if st.button("💾 Sauvegarder cette production", use_container_width=True):
     g_order = []
-    if isinstance(df_min_final, pd.DataFrame) and "GoutCanon" in df_min_final.columns:
-        for g in df_min_final["GoutCanon"].astype(str).tolist():
+    if isinstance(df_min, pd.DataFrame) and "GoutCanon" in df_min.columns:
+        for g in df_min["GoutCanon"].astype(str).tolist():
             if g and g not in g_order:
                 g_order.append(g)
 
     st.session_state.saved_production = {
-        "df_min": df_min_final.copy(),   # <<< ici
+        "df_min": df_min.copy(),   # <<< ici
         "df_calc": df_calc.copy(),
         "gouts": g_order,
         "semaine_du": date_debut.isoformat(),
@@ -298,7 +237,7 @@ def _two_gouts_auto(sp_obj, df_min_cur, gouts_cur):
 
 if sp:
     # Déduction auto des 2 premiers goûts (si ta fiche a 2 colonnes de goût)
-    g1, g2 = _two_gouts_auto(sp, sp.get("df_min", df_min_final), gouts_cibles)
+    g1, g2 = _two_gouts_auto(sp, sp.get("df_min", df_min), gouts_cibles)
 
     template_path = TEMPLATE_MAP.get(cuve_choice)
     if not template_path or not os.path.exists(template_path):
