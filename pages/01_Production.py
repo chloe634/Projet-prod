@@ -111,10 +111,6 @@ if excluded_products:
     df_in_filtered = df_in.loc[~mask_excl_input].copy()
 else:
     df_in_filtered = df_in.copy()
-
-# Affiche la note d’ajustement si présente (ex: contrainte Infusion/Kéfir)
-if isinstance(note_msg, str) and note_msg.strip():
-    st.info(note_msg)
     
 # ---------------- Calculs ----------------
 (
@@ -135,6 +131,9 @@ if isinstance(note_msg, str) and note_msg.strip():
     exclude_list=excluded_gouts,
 )
 
+# Affiche la note d’ajustement si présente (ex: contrainte Infusion/Kéfir)
+if isinstance(note_msg, str) and note_msg.strip():
+    st.info(note_msg)
 
 # ---------------- KPIs ----------------
 total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum())
