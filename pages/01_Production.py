@@ -102,10 +102,21 @@ st.caption(
     f"Fichier courant : **{st.session_state.get('file_name','(sans nom)')}** — Fenêtre (B2) : **{window_days} jours**"
 )
 
-# ---------------- Calculs ----------------
-# Nombre de goûts effectif : on garantit que tous les 'forcés' rentrent
-effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_gouts
+# ---------------- Filtrage des produits exclus (en amont du calcul) ----------------
+if excluded_products:
+    mask_excl_input = df_in.apply(
+        lambda r: f"{r.get('Produit','').strip()} — {r.get('Stock','').strip()}" in excluded_products,
+        axis=1
+    )
+    df_in_filtered = df_in.loc[~mask_excl_input].copy()
+else:
+    df_in_filtered = df_in.copy()
 
+# Affiche la note d’ajustement si présente (ex: contrainte Infusion/Kéfir)
+if isinstance(note_msg, str) and note_msg.strip():
+    st.info(note_msg)
+    
+# ---------------- Calculs ----------------
 (
     df_min,
     cap_resume,
@@ -113,28 +124,17 @@ effective_nb_gouts = max(nb_gouts, len(forced_gouts)) if forced_gouts else nb_go
     synth_sel,
     df_calc,
     df_all,
-    note_msg,    # 👈 7e valeur renvoyée par compute_plan
+    note_msg,
 ) = compute_plan(
-    df_in=df_in,
+    df_in=df_in_filtered,              # <<< on relance avec df_in filtré
     window_days=window_days,
     volume_cible=volume_cible,
-    nb_gouts=effective_nb_gouts,         # 👈 prend en compte les 'forcés'
+    nb_gouts=effective_nb_gouts,
     repartir_pro_rv=repartir_pro_rv,
-    manual_keep=forced_gouts or None,    # 👈 forçage
+    manual_keep=forced_gouts or None,
     exclude_list=excluded_gouts,
 )
 
-# ---------------- Filtrage des produits exclus ----------------
-if excluded_products:
-    mask_excl = df_min.apply(
-        lambda r: f"{r.get('Produit','').strip()} — {r.get('Stock','').strip()}" in excluded_products,
-        axis=1
-    )
-    df_min = df_min.loc[~mask_excl].copy()
-
-# Affiche la note d’ajustement si présente (ex: contrainte Infusion/Kéfir)
-if isinstance(note_msg, str) and note_msg.strip():
-    st.info(note_msg)
 
 # ---------------- KPIs ----------------
 total_btl = int(pd.to_numeric(df_min.get("Bouteilles à produire (arrondi)"), errors="coerce").fillna(0).sum())
