@@ -1,4 +1,8 @@
 # pages/04_Achats_conditionnements.py
+from common.session import require_login, user_menu
+user = require_login()  # stoppe la page si non connecté
+user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
+
 from __future__ import annotations
 import io, re, unicodedata
 from typing import Tuple, List, Dict
