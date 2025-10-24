@@ -1,15 +1,19 @@
 # db/conn.py
 import os
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
-from sqlalchemy import create_engine, text
-from typing import Any, Mapping, Optional
-from sqlalchemy import text as _text
-from sqlalchemy.engine import Result
+from typing import Any, Mapping, Optional, Tuple
+
+from sqlalchemy import create_engine, text as _text
+from sqlalchemy.engine import Engine, Result
 
 
+# ------------------------
+# Helpers URL / Kinsta
+# ------------------------
 def _is_internal(host: str | None) -> bool:
     # Host interne Kubernetes chez Kinsta
     return bool(host) and host.endswith(".svc.cluster.local")
+
 
 def _normalize_scheme(db_url: str) -> str:
     """
@@ -29,12 +33,14 @@ def _normalize_scheme(db_url: str) -> str:
 
     return urlunparse((scheme, u.netloc, u.path, u.params, u.query, u.fragment))
 
+
 def _with_param(url: str, key: str, value: str) -> str:
     u = urlparse(url)
     qs = dict(parse_qsl(u.query, keep_blank_values=True))
     qs[key] = value
     new_query = urlencode(qs)
     return urlunparse((u.scheme, u.netloc, u.path, u.params, new_query, u.fragment))
+
 
 def _build_url() -> str:
     # 0) Si l'admin force un sslmode via l'env, on ignore DB_URL et on reconstruit l'URL
@@ -73,30 +79,41 @@ def _build_url() -> str:
 
     return f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{name}?sslmode={sslmode}"
 
-_ENGINE = None
 
-def engine():
-    """Renvoie un moteur SQLAlchemy prêt à l'emploi."""
+# ------------------------
+# Engine SQLAlchemy
+# ------------------------
+_ENGINE: Engine | None = None
+
+def get_engine() -> Engine:
+    """Renvoie un Engine SQLAlchemy (singleton)."""
     global _ENGINE
     if _ENGINE is None:
-        _ENGINE = create_engine(_build_url(), pool_pre_ping=True)
+        _ENGINE = create_engine(_build_url(), pool_pre_ping=True, future=True)
     return _ENGINE
 
+# Alias backward-compat si ailleurs tu fais `from db import engine`
+def engine() -> Engine:  # noqa: N802 - garder le nom historique
+    return get_engine()
+
+
+# ------------------------
+# Exécution SQL
+# ------------------------
 def run_sql(sql: Any, params: Optional[Mapping[str, Any]] = None) -> Result:
     """
-    Accepte soit une str SQL, soit un sqlalchemy.sql.elements.TextClause.
-    Exemple d'usage :
-        run_sql("SELECT 1")
-        run_sql(_text("SELECT * FROM foo WHERE id=:id"), {"id": "..."})
+    Exécute une requête SQL (str ou sqlalchemy TextClause) et renvoie un Result.
     """
     # Ne convertir en _text() que si c'est une chaîne.
     if isinstance(sql, str):
         sql = _text(sql)
 
-    with engine.begin() as conn:   # ou get_engine().begin() selon ton implémentation
+    # ✅ FIX : utiliser l'Engine réel
+    with get_engine().begin() as conn:
         return conn.execute(sql, params or {})
 
-def ping():
+
+def ping() -> Tuple[bool, str]:
     """Test de santé : SELECT 1."""
     try:
         _ = run_sql("SELECT 1;")
@@ -105,9 +122,11 @@ def ping():
         return False, f"❌ Erreur de connexion : {e}"
 
 
+# ------------------------
+# Debug helpers (sans secrets)
+# ------------------------
 def _current_dsn() -> str:
     """DSN complet effectivement utilisé (avec mot de passe masqué)."""
-    from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
     url = _build_url()
     u = urlparse(url)
     # masque le mot de passe
@@ -118,17 +137,16 @@ def _current_dsn() -> str:
         netloc = f"{user}:***@{hostpart}"
     return urlunparse((u.scheme, netloc, u.path, u.params, u.query, u.fragment))
 
+
 def debug_dsn() -> str:
     """Petit résumé sans secret: host + sslmode."""
-    from urllib.parse import urlparse, parse_qsl
     u = urlparse(_build_url())
     qs = dict(parse_qsl(u.query))
     return f"host={u.hostname} | sslmode={qs.get('sslmode', '<none>')}"
 
+
 def whoami() -> str:
-    # retourne l'utilisateur que notre DSN utilise
-    from urllib.parse import urlparse
+    """Retourne l'utilisateur utilisé par le DSN."""
     u = urlparse(_build_url())
     user = (u.username or "<none>")
     return f"user={user}"
-
