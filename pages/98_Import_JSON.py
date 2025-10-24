@@ -1,4 +1,8 @@
 # pages/98_Import_JSON.py
+import streamlit as st
+st.set_page_config(page_title="(hidden)", page_icon="❌", layout="wide")
+st.stop()
+
 import json
 import pathlib
 import streamlit as st
