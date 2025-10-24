@@ -1,4 +1,8 @@
 # pages/99_Debug.py
+from common.session import require_login, user_menu
+user = require_login()  # stoppe la page si non connecté
+user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
+
 import pathlib
 import traceback
 import streamlit as st
