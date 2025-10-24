@@ -14,7 +14,7 @@ tomli
 PyGithub>=1.59
 requests
 SQLAlchemy==2.0.32
-psycopg2-binary==2.9.9
+psycopg[binary]>=3.1
 
 
 
