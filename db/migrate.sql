@@ -27,3 +27,9 @@ create table if not exists production_proposals (
 );
 
 create index if not exists idx_pp_tenant on production_proposals(tenant_id);
+
+-- Accélère les filtres sur payload JSON
+CREATE INDEX IF NOT EXISTS idx_pp_payload_gin ON production_proposals USING GIN (payload);
+-- Accélère la recherche par nom (_meta.name)
+CREATE INDEX IF NOT EXISTS idx_pp_meta_name ON production_proposals ((payload->'_meta'->>'name'));
+
