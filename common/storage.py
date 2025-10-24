@@ -8,7 +8,7 @@ import pandas as pd
 from sqlalchemy import text
 from db.conn import run_sql
 
-# Limite "mémoire longue" par tenant
+# Limite "mémoire longue" par tenant (nombre max de NOMS distincts)
 MAX_SLOTS = 6
 
 # Identité par défaut (tu peux changer via variables d'env si tu veux)
@@ -88,7 +88,7 @@ def list_saved() -> List[Dict[str, Any]]:
     return out
 
 def save_snapshot(name: str, sp: Dict[str, Any]) -> Tuple[bool, str]:
-    """Crée / remplace une proposition (MAX_SLOTS par tenant)."""
+    """Crée / remplace une proposition (MAX_SLOTS par tenant basé sur les NOMS distincts)."""
     name = (name or "").strip()
     if not name:
         return False, "Nom vide."
@@ -119,15 +119,17 @@ def save_snapshot(name: str, sp: Dict[str, Any]) -> Tuple[bool, str]:
         """), {"p": json.dumps(payload), "id": pid})
         return True, "Proposition mise à jour."
 
-    # Vérifie la limite MAX_SLOTS
+    # Vérifie la limite MAX_SLOTS sur NOM distinct
     cnt_row = run_sql(text("""
-        SELECT COUNT(*) AS c FROM production_proposals WHERE tenant_id=:t
+        SELECT COUNT(DISTINCT payload->'_meta'->>'name') AS c
+        FROM production_proposals
+        WHERE tenant_id = :t
     """), {"t": t_id}).first()
     count = int(dict(cnt_row._mapping)["c"]) if cnt_row else 0
     if count >= MAX_SLOTS:
         return False, f"Limite atteinte ({MAX_SLOTS}). Supprime ou renomme une entrée."
 
-    # Insert
+    # Insert (nouvelle entrée)
     run_sql(text("""
         INSERT INTO production_proposals (tenant_id, created_by, payload, status)
         VALUES (:t, :u, CAST(:p AS JSONB), 'draft')
@@ -157,8 +159,8 @@ def delete_snapshot(name: str) -> bool:
           AND payload->'_meta'->>'name' = :n
         RETURNING id
     """), {"t": t_id, "n": name})
-    # renvoie True si au moins une ligne supprimée
-    return len(res.fetchall()) > 0
+    rows = res.fetchall()
+    return len(rows) > 0  # True si au moins une ligne supprimée
 
 def rename_snapshot(old: str, new: str) -> Tuple[bool, str]:
     new = (new or "").strip()
@@ -183,6 +185,7 @@ def rename_snapshot(old: str, new: str) -> Tuple[bool, str]:
           AND payload->'_meta'->>'name' = :old_name
         RETURNING id
     """), {"t": t_id, "old_name": old, "new_name": new})
-    if len(res.fetchall()) == 0:
+    rows = res.fetchall()
+    if len(rows) == 0:
         return False, "Entrée introuvable."
     return True, "Renommée."
