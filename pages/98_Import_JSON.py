@@ -3,7 +3,7 @@ import json
 import pathlib
 import streamlit as st
 from sqlalchemy import text
-from common.db import run_sql  # <- ton helper existant
+from db.conn import run_sql  # <- ton helper existant
 
 st.set_page_config(page_title="Import mémoire JSON → DB", page_icon="⬆️", layout="wide")
 st.title("⬆️ Importer l'ancienne mémoire (JSON) vers PostgreSQL")
