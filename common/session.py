@@ -19,16 +19,12 @@ def logout_user() -> None:
         del st.session_state[USER_KEY]
 
 def require_login(redirect_to_auth: bool = True) -> Optional[Dict[str, Any]]:
-    """
-    A appeler au début de chaque page privée.
-    Retourne l'utilisateur si connecté, sinon affiche un message + éventuellement reroute.
-    """
     u = current_user()
     if u:
         return u
     st.error("Veuillez vous connecter pour accéder à cette page.")
     if redirect_to_auth:
-        st.page_link("app/00_Auth.py", label="Aller à l’authentification", icon="🔐")
+        st.page_link("pages/00_Auth.py", label="Aller à l’authentification", icon="🔐")
         st.stop()
     return None
 
