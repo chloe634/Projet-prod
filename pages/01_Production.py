@@ -1,4 +1,8 @@
 # pages/01_Production.py
+from common.session import require_login, user_menu
+user = require_login()  # stoppe la page si non connecté
+user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
+
 import os
 import re
 import datetime as _dt
