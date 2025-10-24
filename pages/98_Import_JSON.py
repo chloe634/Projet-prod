@@ -3,7 +3,7 @@ import json
 import pathlib
 import streamlit as st
 from sqlalchemy import text
-from db.conn import run_sql  # <- ton helper existant
+from db.conn import run_sql  # tu as remplacé common.db par db.conn, parfait
 
 st.set_page_config(page_title="Import mémoire JSON → DB", page_icon="⬆️", layout="wide")
 st.title("⬆️ Importer l'ancienne mémoire (JSON) vers PostgreSQL")
@@ -18,9 +18,10 @@ if not DATA_PATH.exists():
 
 TENANT_NAME = "default"
 SYSTEM_EMAIL = "system@symbiose.local"
-SYSTEM_PWD_HASH = "$local$disabled"  # placeholder
+SYSTEM_PWD_HASH = "$local$disabled"  # placeholder non utilisable pour login
 
-if st.button("1) Créer/assurer tenant & user système"):
+if st.button("Créer/assurer tenant & user système"):
+    # upsert tenant
     row_t = run_sql(text("""
         INSERT INTO tenants (name)
         VALUES (:name)
@@ -29,6 +30,7 @@ if st.button("1) Créer/assurer tenant & user système"):
     """), {"name": TENANT_NAME}).mappings().first()
     tenant_id = row_t["id"]
 
+    # upsert user système
     row_u = run_sql(text("""
         INSERT INTO users (tenant_id, email, password_hash, role, is_active)
         VALUES (:tenant_id, :email, :pwd, 'admin', true)
@@ -40,36 +42,43 @@ if st.button("1) Créer/assurer tenant & user système"):
 
 st.divider()
 
-if st.button("2) Importer maintenant le JSON → production_proposals"):
+if st.button("Importer maintenant le JSON → production_proposals"):
     data = json.load(open(DATA_PATH, "r", encoding="utf-8"))
 
+    # Récupérer tenant_id & user_id
     tenant = run_sql(text("SELECT id FROM tenants WHERE name=:n"), {"n": TENANT_NAME}).mappings().first()
-    user   = run_sql(text("SELECT id FROM users WHERE email=:e"), {"e": SYSTEM_EMAIL}).mappings().first()
+    user   = run_sql(text("SELECT id FROM users WHERE email=:e"),  {"e": SYSTEM_EMAIL}).mappings().first()
     if not tenant or not user:
         st.error("Assure d'abord le tenant & le user (bouton au-dessus).")
         st.stop()
-
     tenant_id = tenant["id"]
     user_id   = user["id"]
-    inserted  = 0
 
+    inserted = 0
     for item in data:
-        payload = item.get("payload") or {}
-        # On dépose les métadonnées d'origine dans _meta
+        # Prépare le payload et garde les métadonnées d’origine dans _meta
+        payload = dict(item.get("payload") or {})
         payload["_meta"] = {
             "name": item.get("name"),
             "ts": item.get("ts"),
             "source": "legacy-json"
         }
-        run_sql(text("""
-            INSERT INTO production_proposals (tenant_id, created_by, payload, status, created_at, updated_at)
-            VALUES (:tenant_id, :created_by, CAST(:payload AS JSONB), 'draft',
-                    COALESCE(:ts::timestamptz, NOW()), COALESCE(:ts::timestamptz, NOW()))
-        """), {
+
+        # ⬇️ PATCH appliqué : CAST(:ts AS timestamptz) au lieu de :ts::timestamptz
+        sql = text("""
+            INSERT INTO production_proposals
+                (tenant_id, created_by, payload, status, created_at, updated_at)
+            VALUES
+                (:tenant_id, :created_by, CAST(:payload AS JSONB), 'draft',
+                 COALESCE(CAST(:ts AS timestamptz), NOW()),
+                 COALESCE(CAST(:ts AS timestamptz), NOW()))
+            RETURNING id;
+        """)
+        run_sql(sql, {
             "tenant_id": tenant_id,
             "created_by": user_id,
             "payload": json.dumps(payload),
-            "ts": item.get("ts")
+            "ts": item.get("ts")  # ex: "2025-09-24T13:36:38Z"
         })
         inserted += 1
 
