@@ -2,6 +2,10 @@
 import os
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from sqlalchemy import create_engine, text
+from typing import Any, Mapping, Optional
+from sqlalchemy import text as _text
+from sqlalchemy.engine import Result
+
 
 def _is_internal(host: str | None) -> bool:
     # Host interne Kubernetes chez Kinsta
@@ -78,10 +82,19 @@ def engine():
         _ENGINE = create_engine(_build_url(), pool_pre_ping=True)
     return _ENGINE
 
-def run_sql(sql: str, params: dict | None = None):
-    """Exécute une requête SQL et renvoie le résultat."""
-    with engine().begin() as conn:
-        return conn.execute(text(sql), params or {})
+def run_sql(sql: Any, params: Optional[Mapping[str, Any]] = None) -> Result:
+    """
+    Accepte soit une str SQL, soit un sqlalchemy.sql.elements.TextClause.
+    Exemple d'usage :
+        run_sql("SELECT 1")
+        run_sql(_text("SELECT * FROM foo WHERE id=:id"), {"id": "..."})
+    """
+    # Ne convertir en _text() que si c'est une chaîne.
+    if isinstance(sql, str):
+        sql = _text(sql)
+
+    with engine.begin() as conn:   # ou get_engine().begin() selon ton implémentation
+        return conn.execute(sql, params or {})
 
 def ping():
     """Test de santé : SELECT 1."""
