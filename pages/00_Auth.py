@@ -1,4 +1,4 @@
-# app/00_Auth.py
+from __future__ import annotations
 import streamlit as st
 from common.auth import authenticate, create_user, find_user_by_email
 from common.session import login_user, current_user
