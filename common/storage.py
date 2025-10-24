@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple, Any
 
 import pandas as pd
 from sqlalchemy import text
-from common.db import run_sql
+from db.conn import run_sql
 
 # Limite "mémoire longue" par tenant
 MAX_SLOTS = 6
