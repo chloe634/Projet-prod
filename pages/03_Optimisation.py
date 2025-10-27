@@ -1,5 +1,5 @@
 from __future__ import annotations
-from common.session import require_login, user_menu
+from common.session import require_login, user_menu, user_menu_footer
 user = require_login()  # stoppe la page si non connecté
 user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
 
@@ -58,3 +58,9 @@ with colA:
 with colB:
     total = float(pertes["Perte (€)"].sum()) if isinstance(pertes, pd.DataFrame) and not pertes.empty else 0.0
     kpi("Perte totale (7 j)", f"€{total:,.0f}")
+
+
+
+# --- Footer sidebar (doit être le DERNIER appel de la page) ---
+user_menu_footer(user)
+
