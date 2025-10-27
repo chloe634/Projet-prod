@@ -90,6 +90,7 @@ def _hide_auth_and_entrypoint_links_when_logged_in():
     """, unsafe_allow_html=True)
     
 def user_menu():
+    sidebar_nav_logged_in()
     """Petit encart utilisateur dans la sidebar (à appeler après require_login())."""
     u = current_user()
     if not u:
@@ -100,6 +101,8 @@ def user_menu():
             f"**Rôle :** `{u['role']}`  \n"
             f"**Tenant :** `{u['tenant_id']}`"
         )
+    with st.sidebar:
+        st.markdown("---")
         if st.button("Se déconnecter", use_container_width=True):
             logout_user()
             st.success("Déconnecté.")
