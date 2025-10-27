@@ -68,45 +68,39 @@ def get_or_create_tenant(name: str) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 # Users
 # --------------------------------------------------------------------------
-def find_user_by_email(email: str) -> Optional[Dict[str, Any]]:
-    sql = text("""
-        SELECT id, tenant_id, email, password_hash, role, is_active, created_at
-        FROM users
-        WHERE lower(email)=lower(:e)
-        LIMIT 1
-    """)
-    df = run_sql(sql, {"e": email})
+def find_user_by_email(email: str):
+    from sqlalchemy import text
+    from db.conn import run_sql
+    sql = text("SELECT * FROM users WHERE lower(email)=lower(:e) LIMIT 1")
+    df = _to_df(run_sql(sql, {"e": email}))
     return None if df.empty else df.iloc[0].to_dict()
 
 def count_users_in_tenant(tenant_id: str) -> int:
-    sql = text("SELECT count(*) AS c FROM users WHERE tenant_id=:t")
-    df = run_sql(sql, {"t": tenant_id})
-    return int(df.iloc[0]["c"])
+    from sqlalchemy import text
+    from db.conn import run_sql
+    df = _to_df(run_sql(text("SELECT COUNT(*) AS n FROM users WHERE tenant_id=:t"), {"t": tenant_id}))
+    return int(df.iloc[0]["n"]) if not df.empty else 0
 
-def create_user(email: str, password: str, tenant_name: str, role: Optional[str] = None) -> Dict[str, Any]:
-    tenant = get_or_create_tenant(tenant_name)
-    tenant_id = tenant["id"]
-
-    # premier utilisateur du tenant => admin par défaut (sinon 'user')
-    final_role = role or ("admin" if count_users_in_tenant(tenant_id)==0 else "user")
-
+def create_user(email: str, password: str, tenant_id: str, role: str = "user") -> dict:
+    from sqlalchemy import text
+    from db.conn import run_sql
     sql = text("""
         INSERT INTO users(tenant_id, email, password_hash, role, is_active)
         VALUES (:t, lower(:e), :ph, :r, TRUE)
         RETURNING id, tenant_id, email, role, is_active, created_at
     """)
-    df = run_sql(sql, {"t": tenant_id, "e": email, "ph": hash_password(password), "r": final_role})
+    df = _to_df(run_sql(sql, {"t": tenant_id, "e": email, "ph": hash_password(password), "r": role}))
     return df.iloc[0].to_dict()
 
-def authenticate(email: str, password: str) -> Optional[Dict[str, Any]]:
-    u = find_user_by_email(email)
-    if not u or not u.get("is_active"):
+def authenticate(email: str, password: str):
+    from sqlalchemy import text
+    from db.conn import run_sql
+    sql = text("SELECT * FROM users WHERE lower(email)=lower(:e) LIMIT 1")
+    df = _to_df(run_sql(sql, {"e": email}))
+    if df.empty:
         return None
-    if not verify_password(password, u.get("password_hash","")):
-        return None
-    # on ne renvoie pas le hash
-    u.pop("password_hash", None)
-    return u
+    user = df.iloc[0].to_dict()
+    return user if verify_password(password, user["password_hash"]) else None
 
 def set_user_role(user_id: str, role: str) -> None:
     sql = text("UPDATE users SET role=:r WHERE id=:id")
