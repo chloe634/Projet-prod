@@ -1,5 +1,5 @@
 from __future__ import annotations
-from common.session import require_login, user_menu
+from common.session import require_login, user_menu, user_menu_footer
 user = require_login()  # stoppe la page si non connecté
 user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
 
@@ -378,3 +378,8 @@ if saved_list:
         st.metric("Propositions stockées", f"{len(saved_list)}/{MAX_SLOTS}")
 else:
     st.info("Aucune proposition enregistrée pour l’instant.")
+
+
+
+# --- Footer sidebar (doit être le DERNIER appel de la page) ---
+user_menu_footer(user)
