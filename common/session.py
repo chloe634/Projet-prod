@@ -114,3 +114,54 @@ def user_menu():
             st.success("Déconnecté.")
             st.rerun()
     _hide_auth_and_entrypoint_links_when_logged_in()
+
+# --- Sidebar footer (déconnexion collée en bas) ------------------------------
+import streamlit as st
+
+# évite d'injecter le CSS plusieurs fois
+if "_sym_sidebar_css" not in st.session_state:
+    st.markdown("""
+    <style>
+    /* Met la sidebar en colonne et autorise un footer en bas */
+    section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Espace extensible pour repousser le footer */
+    .sym-sidebar-spacer { flex-grow: 1; }
+    /* Footer visuellement séparé, collé en bas */
+    .sym-sidebar-footer {
+      position: sticky; bottom: 0;
+      background: var(--background-color);
+      border-top: 1px solid #e5e7eb;
+      padding-top: .75rem; margin-top: .75rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.session_state["_sym_sidebar_css"] = True
+
+
+def user_menu_footer(user: dict | None):
+    """À appeler en DERNIER dans chaque page, pour garantir rien dessous."""
+    # insère un espace qui prend toute la hauteur restante
+    st.sidebar.markdown('<div class="sym-sidebar-spacer"></div>', unsafe_allow_html=True)
+
+    with st.sidebar:
+        st.markdown('<div class="sym-sidebar-footer">', unsafe_allow_html=True)
+
+        # Bouton de déconnexion : utilise ta fonction existante si elle s'appelle autrement
+        if st.button("Se déconnecter", use_container_width=True):
+            try:
+                # si tu as déjà une fonction dédiée :
+                logout()  # noqa: F821  (remplace par le bon nom si nécessaire)
+            except Exception:
+                # fallback sûr si pas de fonction : reset session et rerun
+                st.session_state.clear()
+                st.rerun()
+
+        if user and user.get("email"):
+            st.caption(f"Connecté : **{user['email']}**")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
