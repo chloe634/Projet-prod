@@ -1,5 +1,14 @@
 from __future__ import annotations
 import streamlit as st
+
+st.set_page_config(page_title="Authentification", page_icon="🔐", initial_sidebar_state="collapsed")
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] {display:none !important;}
+section[data-testid="stSidebarNav"] {display:none !important;}
+</style>
+""", unsafe_allow_html=True)
+
 from common.auth import authenticate, create_user, find_user_by_email
 from common.session import login_user, current_user
 
