@@ -1,5 +1,5 @@
 from __future__ import annotations
-from common.session import require_login, user_menu
+from common.session import require_login, user_menu, user_menu_footer
 user = require_login()  # stoppe la page si non connecté
 user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
 
@@ -631,3 +631,8 @@ if (df_conso is not None) and (df_stockc is not None) and (not err_block):
     )
 else:
     st.info("Charge les deux fichiers pour obtenir la proposition d’achats.")
+
+
+
+# --- Footer sidebar (doit être le DERNIER appel de la page) ---
+user_menu_footer(user)
