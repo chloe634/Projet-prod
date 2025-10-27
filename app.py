@@ -9,4 +9,4 @@ if not is_authenticated():
     st.switch_page("pages/00_Auth.py")
 
 # Si connecté → on redirige vers la page principale de travail
-st.switch_page("pages/01_Production.py")
+st.switch_page("pages/01_Accueil.py")
