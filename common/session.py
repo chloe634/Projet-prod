@@ -2,6 +2,30 @@ from __future__ import annotations
 from typing import Optional, Dict, Any
 import streamlit as st
 
+def sidebar_nav_logged_in():
+    """
+    Remplace la navigation par défaut de Streamlit une fois connecté.
+    - Cache la liste automatique de pages (qui contient 'app' et 'Auth')
+    - Affiche notre propre menu de liens dans l'ordre souhaité.
+    """
+    # Cache toute la nav auto
+    st.markdown("""
+    <style>
+      section[data-testid="stSidebarNav"] { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.sidebar:
+        st.markdown("### Navigation")
+        # ⚠️ Mets ici les VRAIS chemins de fichiers après tes renommages
+        st.page_link("pages/01_Accueil.py",              label="Accueil",                 icon="🏠")
+        st.page_link("pages/02_Production.py",           label="Production",              icon="📦")
+        st.page_link("pages/03_Optimisation.py",         label="Optimisation",            icon="🧮")
+        st.page_link("pages/04_Fiche_de_ramasse.py",     label="Fiche de ramasse",        icon="🚚")
+        st.page_link("pages/05_Achats_conditionnements.py", label="Achats conditionnements", icon="📦")
+        st.page_link("pages/99_Debug.py",                label="Debug",                   icon="🛠️")
+
+
 USER_KEY = "auth_user"
 
 def current_user() -> Optional[Dict[str, Any]]:
