@@ -52,7 +52,19 @@ def require_role(*roles: str) -> Dict[str, Any]:
         st.error("Accès refusé (rôle insuffisant).")
         st.stop()
     return u
-
+    
+def _hide_auth_and_entrypoint_links_when_logged_in():
+    # Cache le lien vers la page d’auth + l’entrée "app" dans la nav
+    st.markdown("""
+    <style>
+    /* cache lien vers 00_Auth.py dans la nav */
+    section[data-testid="stSidebar"] a[href*="00_Auth.py"] { display: none !important; }
+    /* cache le lien d'entrée (app.py) si Streamlit l'affiche */
+    section[data-testid="stSidebar"] a[href$="app.py"],
+    section[data-testid="stSidebar"] a[href*="app.py?"] { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+    
 def user_menu():
     """Petit encart utilisateur dans la sidebar (à appeler après require_login())."""
     u = current_user()
@@ -68,3 +80,4 @@ def user_menu():
             logout_user()
             st.success("Déconnecté.")
             st.rerun()
+    _hide_auth_and_entrypoint_links_when_logged_in()
