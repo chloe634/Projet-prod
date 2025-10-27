@@ -3,8 +3,6 @@ from common.session import require_login, user_menu
 user = require_login()  # stoppe la page si non connecté
 user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
 
-from __future__ import annotations
-
 import os, re, datetime as dt, unicodedata, mimetypes
 import pandas as pd
 import streamlit as st
