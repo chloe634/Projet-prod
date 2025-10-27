@@ -14,6 +14,28 @@ def _to_df(res) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+
+def get_or_create_tenant(name: str) -> dict:
+    """Retourne {'id','name'} ; crée le tenant si absent."""
+    q1 = text("SELECT id, name FROM tenants WHERE lower(name)=lower(:n) LIMIT 1")
+    df = _to_df(run_sql(q1, {"n": name}))
+    if not df.empty:
+        return df.iloc[0].to_dict()
+    q2 = text("INSERT INTO tenants(name) VALUES (:n) RETURNING id, name")
+    df2 = _to_df(run_sql(q2, {"n": name}))
+    return df2.iloc[0].to_dict()
+
+def ensure_tenant_id(tenant_name_or_id: str) -> str:
+    """Accepte un UUID ou un nom ; renvoie toujours l'UUID du tenant."""
+    t = (tenant_name_or_id or "").strip()
+    if not t:
+        raise ValueError("Tenant requis.")
+    if _UUID_RE.match(t):
+        return t
+    return get_or_create_tenant(t)["id"]
+
+
 from sqlalchemy import text
 from db.conn import run_sql  # tu l'utilises déjà ailleurs
 
@@ -81,16 +103,26 @@ def count_users_in_tenant(tenant_id: str) -> int:
     df = _to_df(run_sql(text("SELECT COUNT(*) AS n FROM users WHERE tenant_id=:t"), {"t": tenant_id}))
     return int(df.iloc[0]["n"]) if not df.empty else 0
 
-def create_user(email: str, password: str, tenant_id: str, role: str = "user") -> dict:
-    from sqlalchemy import text
-    from db.conn import run_sql
+def create_user(email: str, password: str, tenant_name_or_id: str, role: str = "user") -> dict:
+    """
+    Crée un utilisateur.
+    - tenant_name_or_id : peut être un nom ('Ferment Station') ou un UUID.
+    """
+    tenant_id = ensure_tenant_id(tenant_name_or_id)
+
     sql = text("""
         INSERT INTO users(tenant_id, email, password_hash, role, is_active)
         VALUES (:t, lower(:e), :ph, :r, TRUE)
         RETURNING id, tenant_id, email, role, is_active, created_at
     """)
-    df = _to_df(run_sql(sql, {"t": tenant_id, "e": email, "ph": hash_password(password), "r": role}))
+    df = _to_df(run_sql(sql, {
+        "t": tenant_id,
+        "e": email,
+        "ph": hash_password(password),
+        "r": role or "user",
+    }))
     return df.iloc[0].to_dict()
+
 
 def authenticate(email: str, password: str):
     from sqlalchemy import text
