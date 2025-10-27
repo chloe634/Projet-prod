@@ -1,5 +1,5 @@
 from __future__ import annotations
-from common.session import require_login, user_menu
+from common.session import require_login, user_menu, user_menu_footer
 user = require_login()  # stoppe la page si non connecté
 user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
 
@@ -583,3 +583,8 @@ else:
                                "Si le destinataire ne le voit pas, il est probablement en quarantaine/filtre.")
             except Exception as e:
                 st.error(f"Échec de l’envoi : {e}")
+
+
+
+# --- Footer sidebar (doit être le DERNIER appel de la page) ---
+user_menu_footer(user)
