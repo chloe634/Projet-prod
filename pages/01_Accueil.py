@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 🔐 Protection login
-from common.session import require_login, user_menu
+from common.session import require_login, user_menu, user_menu_footer
 user = require_login()
 user_menu()
 
@@ -125,3 +125,8 @@ if "df_raw" in st.session_state:
         st.dataframe(st.session_state.df_raw.head(20), use_container_width=True)
 else:
     st.warning("Aucun fichier en mémoire. Dépose un Excel ci-dessus pour activer les autres onglets.")
+
+
+
+# --- Footer sidebar (doit être le DERNIER appel de la page) ---
+user_menu_footer(user)
