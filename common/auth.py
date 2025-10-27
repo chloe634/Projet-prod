@@ -4,6 +4,16 @@ import os, base64, secrets, hashlib
 from typing import Optional, Dict, Any
 from datetime import datetime
 import pandas as pd
+
+def _to_df(res) -> pd.DataFrame:
+    """Transforme CursorResult -> DataFrame, ou passe-plat si déjà DF."""
+    try:
+        if isinstance(res, pd.DataFrame):
+            return res
+        return pd.DataFrame(list(res.mappings()))
+    except Exception:
+        return pd.DataFrame()
+
 from sqlalchemy import text
 from db.conn import run_sql  # tu l'utilises déjà ailleurs
 
