@@ -20,7 +20,7 @@ st.title("🔐 Authentification")
 u = current_user()
 if u:
     st.success(f"Déjà connecté en tant que {u['email']}.")
-    st.page_link("app/pages/01_Production.py", label="➡️ Aller à la production")
+    st.page_link("pages/01_Production.py", label="➡️ Aller à la production")
     st.stop()
 
 tab_login, tab_signup = st.tabs(["Se connecter", "Créer un compte"])
