@@ -326,21 +326,42 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
 
 def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
     """
-    Construit les options depuis la proposition sauvegardée.
-    - label  : 'Produit — Stock' (désignation exacte + format, ex. "NIKO - Kéfir de fruits Mangue Passion — Carton de 12 Bouteilles - 0.33L")
+    Construit les options depuis la proposition sauvegardée, en ne gardant
+    que les produits dont le nombre de cartons à produire > 0.
+
+    - label  : 'Produit — Stock' (désignation exacte + format)
     - gout   : GoutCanon (pour le lookup CSV)
-    - format : '12x33' / '6x75' / '4x75' (dérivé de Stock/Format/Designation/Produit pour le lookup CSV)
-    ⚠️ Dédoublonnage par label (et non plus par GoutCanon+format) pour conserver les NIKO.
+    - format : '12x33' / '6x75' / '4x75' (dérivé de Stock/Format/Designation/Produit)
+    - filtre : colonne quantité cartons détectée automatiquement (voir CAND_QTY_COLS)
     """
     if df_min_saved is None or df_min_saved.empty:
-        return pd.DataFrame(columns=["label","gout","format","prod_hint"])
+        return pd.DataFrame(columns=["label", "gout", "format", "prod_hint"])
+
+    # 1) Détecte la colonne "cartons à produire"
+    CAND_QTY_COLS = [
+        "Cartons à produire (arrondi)",
+        "Cartons à produire",
+        "CartonsArrondis",
+        "Cartons_produire",
+        "Cartons",
+    ]
+    qty_col = next((c for c in CAND_QTY_COLS if c in df_min_saved.columns), None)
+
+    # 2) Filtre > 0 si on a trouvé la colonne, sinon garde tout
+    df_src = df_min_saved.copy()
+    if qty_col:
+        qty = pd.to_numeric(df_src[qty_col], errors="coerce").fillna(0)
+        df_src = df_src[qty > 0]
+
+    if df_src.empty:
+        return pd.DataFrame(columns=["label", "gout", "format", "prod_hint"])
 
     rows, seen = [], set()
-    for _, r in df_min_saved.iterrows():
+    for _, r in df_src.iterrows():
         gout = str(r.get("GoutCanon") or "").strip()
 
-        prod_txt  = _norm(r.get("Produit", ""))   # ex. "NIKO - Kéfir de fruits Mangue Passion"
-        stock_txt = _norm(r.get("Stock", ""))     # ex. "Carton de 12 Bouteilles - 0.33L"
+        prod_txt  = _norm(r.get("Produit", ""))     # ex. "NIKO - Kéfir de fruits Mangue Passion"
+        stock_txt = _norm(r.get("Stock", ""))       # ex. "Carton de 12 Bouteilles - 0.33L"
 
         fmt = (
             _format_from_stock(stock_txt)
@@ -351,10 +372,10 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
         if not gout or not fmt:
             continue
 
-        # Label final affiché partout
+        # Label final affiché
         label = f"{prod_txt} — {stock_txt}" if prod_txt and stock_txt else f"{gout} — {fmt}"
 
-        # ✅ Dédoublonnage par label pour garder les variantes de marque (NIKO vs non-NIKO)
+        # Dédoublonnage par label (pour conserver NIKO vs non-NIKO)
         key = label.lower()
         if key in seen:
             continue
@@ -368,6 +389,7 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
+
 
 # ================================== UI =======================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
