@@ -103,22 +103,13 @@ def _hide_auth_and_entrypoint_links_when_logged_in():
 
 def user_menu():
     """
-    Petit encart utilisateur dans la sidebar (à appeler après require_login()).
-    ⚠️ NE rend plus le bouton 'Se déconnecter' (désormais dans le footer).
+    Encart utilisateur minimal dans la sidebar (nav custom uniquement).
+    ⚠️ Ne rend PAS les infos 'Connecté / Rôle / Tenant' (souhaité).
+    Le bouton 'Se déconnecter' est géré par user_menu_footer().
     """
     sidebar_nav_logged_in()
-    u = current_user()
-    if not u:
-        return
-
-    with st.sidebar:
-        st.markdown(
-            f"**Connecté :** {u['email']}  \n"
-            f"**Rôle :** `{u['role']}`  \n"
-            f"**Tenant :** `{u['tenant_id']}`"
-        )
-
     _hide_auth_and_entrypoint_links_when_logged_in()
+
 
 
 # ======================== SIDEBAR FOOTER (STICKY) ============================
