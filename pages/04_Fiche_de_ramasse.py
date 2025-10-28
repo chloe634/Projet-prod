@@ -326,10 +326,11 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
 
 def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
     """
-    Construit la liste des produits à partir de la proposition sauvegardée.
-    - label  : 'Produit — Stock' (donc désignation + format, exactement comme en tableau de production)
+    Construit les options depuis la proposition sauvegardée.
+    - label  : 'Produit — Stock' (désignation exacte + format, ex. "NIKO - Kéfir de fruits Mangue Passion — Carton de 12 Bouteilles - 0.33L")
     - gout   : GoutCanon (pour le lookup CSV)
-    - format : '12x33' / '6x75' / '4x75' (dérivé de Stock/Format/Designation pour le lookup CSV)
+    - format : '12x33' / '6x75' / '4x75' (dérivé de Stock/Format/Designation/Produit pour le lookup CSV)
+    ⚠️ Dédoublonnage par label (et non plus par GoutCanon+format) pour conserver les NIKO.
     """
     if df_min_saved is None or df_min_saved.empty:
         return pd.DataFrame(columns=["label","gout","format","prod_hint"])
@@ -338,28 +339,23 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
     for _, r in df_min_saved.iterrows():
         gout = str(r.get("GoutCanon") or "").strip()
 
-        # Récupère les deux morceaux qui forment ton libellé complet
-        prod_txt  = _norm(r.get("Produit", ""))          # ex. "NIKO - Kéfir de fruits Mangue Passion"
-        stock_txt = _norm(r.get("Stock", ""))            # ex. "Carton de 12 Bouteilles - 0.33L"
+        prod_txt  = _norm(r.get("Produit", ""))   # ex. "NIKO - Kéfir de fruits Mangue Passion"
+        stock_txt = _norm(r.get("Stock", ""))     # ex. "Carton de 12 Bouteilles - 0.33L"
 
-        # Format normalisé pour le lookup CSV
         fmt = (
             _format_from_stock(stock_txt)
             or _format_from_stock(_norm(r.get("Format", "")))
             or _format_from_stock(_norm(r.get("Designation", "")))
             or _format_from_stock(prod_txt)
         )
-
         if not gout or not fmt:
-            # si on n'a pas les deux, on ne peut pas faire un lookup fiable
             continue
 
-        # Label final = ce que tu veux voir dans la multisélection et la table
-        # (on utilise un tiret long ' — ' pour la lisibilité)
+        # Label final affiché partout
         label = f"{prod_txt} — {stock_txt}" if prod_txt and stock_txt else f"{gout} — {fmt}"
 
-        # Évite les doublons par (gout, format)
-        key = (gout.lower(), fmt)
+        # ✅ Dédoublonnage par label pour garder les variantes de marque (NIKO vs non-NIKO)
+        key = label.lower()
         if key in seen:
             continue
         seen.add(key)
@@ -372,8 +368,6 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
-
-
 
 # ================================== UI =======================================
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
