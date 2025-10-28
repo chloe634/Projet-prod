@@ -1,36 +1,7 @@
 from typing import Optional, Dict, Any
 import streamlit as st
 
-def sidebar_nav_logged_in():
-    """
-    Remplace la navigation standard une fois connecté :
-    - on cache TOUTE la nav multipage de Streamlit
-    - on affiche notre menu propre, sans 'app' ni 'Auth'
-    """
-    st.markdown("""
-    <style>
-      /* Cache toute la nav multipage Streamlit */
-      [data-testid="stSidebarNav"]              { display: none !important; }
-      [data-testid="stSidebarNavItems"]         { display: none !important; }
-      /* Si certaines versions insèrent le bloc nav autrement */
-      section[data-testid="stSidebar"] nav      { display: none !important; }
-      /* Cache tout lien résiduel vers app.py ou Auth (filet de sécurité) */
-      section[data-testid="stSidebar"] a[href$="app.py"],
-      section[data-testid="stSidebar"] a[href*="/app"],
-      section[data-testid="stSidebar"] a[href*="00_Auth.py"],
-      section[data-testid="stSidebar"] a[href*="_00_Auth.py"] { display: none !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    with st.sidebar:
-        st.markdown("### Navigation")
-        st.page_link("pages/01_Accueil.py",                 label="Accueil",                 icon="🏠")
-        st.page_link("pages/02_Production.py",              label="Production",              icon="📦")
-        st.page_link("pages/03_Optimisation.py",            label="Optimisation",            icon="🧮")
-        st.page_link("pages/04_Fiche_de_ramasse.py",        label="Fiche de ramasse",        icon="🚚")
-        st.page_link("pages/05_Achats_conditionnements.py", label="Achats conditionnements", icon="📦")
-        st.page_link("pages/99_Debug.py",                   label="Debug",                   icon="🛠️")
-
+# ============================ NAV & AUTH BASICS ==============================
 
 USER_KEY = "auth_user"
 
@@ -57,7 +28,7 @@ def _hide_sidebar_nav():
 
 def require_login(redirect_to_auth: bool = True) -> Optional[Dict[str, Any]]:
     """
-    A appeler tout en haut de CHAQUE page privée.
+    À appeler tout en haut de CHAQUE page privée.
     Si non connecté : masque la sidebar + redirige vers pages/00_Auth.py puis stoppe la page.
     """
     u = current_user()
@@ -68,7 +39,7 @@ def require_login(redirect_to_auth: bool = True) -> Optional[Dict[str, Any]]:
     st.error("Veuillez vous connecter pour accéder à cette page.")
 
     if redirect_to_auth:
-        # Redirige vers la page d'auth (toujours relative à l'entrypoint app.py)
+        # Redirige vers la page d’auth (toujours relative à l'entrypoint app.py)
         try:
             st.switch_page("pages/00_Auth.py")
         except Exception:
@@ -82,7 +53,41 @@ def require_role(*roles: str) -> Dict[str, Any]:
         st.error("Accès refusé (rôle insuffisant).")
         st.stop()
     return u
-    
+
+
+# ====================== SIDEBAR: NAV CUSTOM CONNECTÉ =========================
+
+def sidebar_nav_logged_in():
+    """
+    Remplace la navigation standard une fois connecté :
+    - cache TOUTE la nav multipage de Streamlit
+    - affiche notre menu propre, sans 'app' ni 'Auth'
+    """
+    st.markdown("""
+    <style>
+      /* Cache toute la nav multipage Streamlit */
+      [data-testid="stSidebarNav"]              { display: none !important; }
+      [data-testid="stSidebarNavItems"]         { display: none !important; }
+      /* Si certaines versions insèrent le bloc nav autrement */
+      section[data-testid="stSidebar"] nav      { display: none !important; }
+      /* Cache tout lien résiduel vers app.py ou Auth (filet de sécurité) */
+      section[data-testid="stSidebar"] a[href$="app.py"],
+      section[data-testid="stSidebar"] a[href*="/app"],
+      section[data-testid="stSidebar"] a[href*="00_Auth.py"],
+      section[data-testid="stSidebar"] a[href*="_00_Auth.py"] { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.sidebar:
+        st.markdown("### Navigation")
+        st.page_link("pages/01_Accueil.py",                 label="Accueil",                 icon="🏠")
+        st.page_link("pages/02_Production.py",              label="Production",              icon="📦")
+        st.page_link("pages/03_Optimisation.py",            label="Optimisation",            icon="🧮")
+        st.page_link("pages/04_Fiche_de_ramasse.py",        label="Fiche de ramasse",        icon="🚚")
+        st.page_link("pages/05_Achats_conditionnements.py", label="Achats conditionnements", icon="📦")
+        st.page_link("pages/99_Debug.py",                   label="Debug",                   icon="🛠️")
+
+
 def _hide_auth_and_entrypoint_links_when_logged_in():
     # Cache le lien vers la page d’auth + l’entrée "app" dans la nav
     st.markdown("""
@@ -94,31 +99,31 @@ def _hide_auth_and_entrypoint_links_when_logged_in():
     section[data-testid="stSidebar"] a[href*="app.py?"] { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
-    
+
+
 def user_menu():
-    """Petit encart utilisateur dans la sidebar (à appeler après require_login())."""
+    """
+    Petit encart utilisateur dans la sidebar (à appeler après require_login()).
+    ⚠️ NE rend plus le bouton 'Se déconnecter' (désormais dans le footer).
+    """
     sidebar_nav_logged_in()
     u = current_user()
     if not u:
         return
+
     with st.sidebar:
         st.markdown(
             f"**Connecté :** {u['email']}  \n"
             f"**Rôle :** `{u['role']}`  \n"
             f"**Tenant :** `{u['tenant_id']}`"
         )
-    with st.sidebar:
-        st.markdown("---")
-        if st.button("Se déconnecter", use_container_width=True):
-            logout_user()
-            st.success("Déconnecté.")
-            st.rerun()
+
     _hide_auth_and_entrypoint_links_when_logged_in()
 
-# --- Sidebar footer (déconnexion collée en bas) ------------------------------
-import streamlit as st
 
-# évite d'injecter le CSS plusieurs fois
+# ======================== SIDEBAR FOOTER (STICKY) ============================
+
+# Injecte le CSS nécessaire une seule fois
 if "_sym_sidebar_css" not in st.session_state:
     st.markdown("""
     <style>
@@ -142,26 +147,24 @@ if "_sym_sidebar_css" not in st.session_state:
     st.session_state["_sym_sidebar_css"] = True
 
 
-def user_menu_footer(user: dict | None):
-    """À appeler en DERNIER dans chaque page, pour garantir rien dessous."""
-    # insère un espace qui prend toute la hauteur restante
+def user_menu_footer(user: Dict[str, Any] | None):
+    """
+    À appeler en DERNIER dans chaque page, pour garantir qu'il n'y ait rien dessous.
+    Rend le bouton de déconnexion + rappel de l'email.
+    """
+    # espace qui prend toute la hauteur restante pour pousser le footer en bas
     st.sidebar.markdown('<div class="sym-sidebar-spacer"></div>', unsafe_allow_html=True)
 
     with st.sidebar:
         st.markdown('<div class="sym-sidebar-footer">', unsafe_allow_html=True)
 
-        # Bouton de déconnexion : utilise ta fonction existante si elle s'appelle autrement
-        if st.button("Se déconnecter", use_container_width=True):
-            try:
-                # si tu as déjà une fonction dédiée :
-                logout()  # noqa: F821  (remplace par le bon nom si nécessaire)
-            except Exception:
-                # fallback sûr si pas de fonction : reset session et rerun
-                st.session_state.clear()
-                st.rerun()
+        # Bouton de déconnexion (clé unique pour éviter les collisions)
+        if st.button("Se déconnecter", key="logout_footer", use_container_width=True):
+            logout_user()
+            st.success("Déconnecté.")
+            st.rerun()
 
         if user and user.get("email"):
             st.caption(f"Connecté : **{user['email']}**")
 
         st.markdown('</div>', unsafe_allow_html=True)
-
