@@ -13,6 +13,9 @@ import importlib
 import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
 from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
+from common.email import send_html_with_pdf, html_signature, _get_ns, _get
+from common.xlsx_fill import build_bl_enlevements_pdf
+
 
 # ================================ Normalisation ===============================
 
