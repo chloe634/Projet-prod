@@ -3,7 +3,7 @@ from common.session import require_login, user_menu, user_menu_footer
 user = require_login()  # stoppe la page si non connecté
 user_menu()             # nav custom (le bouton logout est dans le footer)
 
-import os, re, datetime as dt, unicodedata, mimetypes
+import os, re, datetime as dt, unicodedata
 import pandas as pd
 import streamlit as st
 from dateutil.tz import gettz
@@ -14,7 +14,8 @@ import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
 from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 from common.email import send_html_with_pdf, html_signature, _get_ns, _get
-from common.xlsx_fill import build_bl_enlevements_pdf
+from common.storage import list_saved, load_snapshot
+from pathlib import Path
 
 
 # ================================ Normalisation ===============================
@@ -51,66 +52,19 @@ def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
 
 
-# ================================== EMAIL ====================================
+# ================================== EMAIL (wrapper) ===========================
 
-import smtplib
-from email.message import EmailMessage
-from email.utils import formataddr
-from pathlib import Path
-
-from common.storage import list_saved, load_snapshot
-
-# ======================= Helpers email (secrets + fallback) ===================
-# tomllib (Py 3.11+) ou tomli (Py 3.8–3.10)
-try:
-    import tomllib as _toml
-except Exception:
-    import tomli as _toml  # ➜ ajoute 'tomli' dans requirements.txt si besoin
-
-def _load_email_secrets_fallback() -> dict:
+def _default_recipients_from_cfg() -> list[str]:
     """
-    Priorités:
-      1) st.secrets["email"] (Cloud / local)
-      2) <racine>/.streamlit/secrets.toml
-      3) <racine>/streamlit/secrets.toml (compat ancien dossier)
+    Lit d'abord EMAIL_RECIPIENTS (env), fallback st.secrets['email']['recipients'] (string ou liste).
     """
-    if "email" in st.secrets:
-        return dict(st.secrets.get("email", {}))
+    cfg = _get_ns("email", "recipients") or _get("EMAIL_RECIPIENTS", "")
+    if isinstance(cfg, list):
+        return [x.strip() for x in cfg if x and str(x).strip()]
+    if isinstance(cfg, str):
+        return [x.strip() for x in cfg.split(",") if x.strip()]
+    return []
 
-    try:
-        proj_root = Path(__file__).resolve().parents[1]
-    except Exception:
-        proj_root = Path(os.getcwd())
-
-    for p in [proj_root / ".streamlit" / "secrets.toml",
-              proj_root / "streamlit" / "secrets.toml"]:
-        try:
-            if p.exists():
-                with open(p, "rb") as f:
-                    data = _toml.load(f)
-                if isinstance(data, dict) and "email" in data:
-                    return dict(data["email"] or {})
-        except Exception:
-            continue
-    return {}
-
-def _get_email_cfg():
-    cfg = _load_email_secrets_fallback()
-    required = ("host", "port", "user", "password")
-    missing = [k for k in required if not str(cfg.get(k, "")).strip()]
-    if missing:
-        raise RuntimeError(
-            "Secrets email manquants: " + ", ".join(missing) +
-            " — place le bloc [email] dans Settings → Secrets (Cloud) ou .streamlit/secrets.toml (local)."
-        )
-    cfg.setdefault("sender", cfg["user"])
-    rec = cfg.get("recipients", [])
-    if isinstance(rec, str):
-        rec = [x.strip() for x in rec.split(",") if x.strip()]
-    cfg["recipients"] = rec
-    return cfg
-
-# =================== Envoi email (HTML + signature + images) ==================
 def send_mail_with_pdf(
     pdf_bytes: bytes,
     filename: str,
@@ -119,110 +73,33 @@ def send_mail_with_pdf(
     date_ramasse: dt.date,
     bcc_me: bool = True
 ):
-    cfg = _get_email_cfg()
-    sender = cfg["sender"]                  # = cfg["user"]
-    from_value = formataddr(("Ferment Station – Logistique", sender))
+    """
+    Envoi via common.email → choix auto SendGrid / Mailgun / SMTP selon variables d'env.
+    - Corps HTML + signature inline (logos en base64 via html_signature)
+    - PDF en pièce jointe
+    """
+    # Sujet + corps
+    subject = f"Demande de ramasse — {date_ramasse:%d/%m/%Y} — Ferment Station"
 
-    # Corps
-    body_txt = f"""Bonjour,
+    body_html = f"""
+    <p>Bonjour,</p>
+    <p>Nous aurions besoin d’une ramasse pour demain.<br>
+    Pour <strong>{total_palettes}</strong> palettes.</p>
+    <p>Merci,<br>Bon après-midi.</p>
+    """
+    html = html_signature(body_html)  # ajoute logos Symbiose + NIKO
 
-Nous aurions besoin d’une ramasse pour demain.
-Pour {total_palettes} palettes.
+    # BCC expéditeur si demandé (on l’obtient via EMAIL_SENDER / [email].sender)
+    sender = _get_ns("email", "sender") or _get("EMAIL_SENDER")
+    recipients = list(to_list)
+    if bcc_me and sender:
+        # évite doublon si l’expéditeur est déjà dans la liste
+        if sender not in recipients:
+            recipients.append(sender)
 
-Merci,
-Bon après-midi."""
-    body_html = f"""<p>Bonjour,</p>
-<p>Nous aurions besoin d’une ramasse pour demain.<br>
-Pour <strong>{total_palettes}</strong> palettes.</p>
-<p>Merci,<br>Bon après-midi.</p>"""
+    # Envoi (exceptions remontent pour affichage UI)
+    send_html_with_pdf(subject=subject, html_body=html, recipients=recipients, pdf_bytes=pdf_bytes, pdf_name=filename)
 
-    # Signature (texte + HTML avec images inline)
-    SIG_TXT = """--
-Ferment Station
-Producteur de boissons fermentées
-26 Rue Robert Witchitz – 94200 Ivry-sur-Seine
-09 71 22 78 95"""
-
-    SIG_HTML = """
-<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
-<div style="font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111827">
-  <div style="font-size:18px;font-weight:700">Ferment Station</div>
-  <div style="font-weight:700;margin-top:2px">Producteur de boissons fermentées</div>
-  <div style="margin-top:12px">26 Rue Robert Witchitz – 94200 Ivry-sur-Seine</div>
-  <div><a href="tel:+33971227895" style="color:#2563eb;text-decoration:underline">09 71 22 78 95</a></div>
-  <div style="margin-top:14px">
-    <img src="cid:symbiose" alt="Symbiose" height="36" style="vertical-align:middle;margin-right:14px;border:0">
-    <img src="cid:niko"     alt="Niko"     height="36" style="vertical-align:middle;border:0">
-  </div>
-</div>
-"""
-
-    msg = EmailMessage()
-    msg["Subject"] = f"Demande de ramasse — {date_ramasse:%d/%m/%Y} — Ferment Station"
-    msg["From"] = from_value
-    msg["To"] = ", ".join(to_list)
-    msg["Reply-To"] = sender
-    msg["X-Priority"] = "1"                 # surtout pour Outlook
-    msg["X-MSMail-Priority"] = "High"
-    msg["Importance"] = "High"
-    msg["X-App-Trace"] = "ferment-station/fiche-ramasse"
-
-    # Texte + HTML (+ signature)
-    msg.set_content(body_txt + "\n\n" + SIG_TXT)
-    msg.add_alternative(body_html + SIG_HTML, subtype="html")
-
-    # Images inline (CID) pour la signature — version minimisée (pas de filename)
-    INLINE_IMAGES = {
-        "symbiose": "assets/signature/logo_symbiose.png",
-        "niko":     "assets/signature/NIKO_Logo.png",
-    }
-    html_part = msg.get_payload()[-1]  # partie HTML (text/html)
-    
-    for cid, path in INLINE_IMAGES.items():
-        if not os.path.exists(path):
-            st.caption(f"⚠️ Signature: fichier introuvable → {path}")
-            continue
-        try:
-            with open(path, "rb") as f:
-                data = f.read()
-            if not data:
-                st.caption(f"⚠️ Signature: fichier vide → {path}")
-                continue
-    
-            related = html_part.add_related(
-                data,
-                maintype="image",
-                subtype="png",             # force PNG
-                cid=f"<{cid}>",            # référence via src="cid:cid"
-                # ❌ pas de filename pour éviter d’être listé comme PJ
-            )
-            # disposition explicite en inline
-            related.add_header("Content-Disposition", "inline")
-            # astuce utilisée par Gmail pour associer CID ↔ image
-            related.add_header("X-Attachment-Id", cid)
-        except Exception as e:
-            st.caption(f"⚠️ Signature: erreur sur {path} → {e}")
-
-
-    # Pièce jointe PDF
-    msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
-
-    # BCC vers l’expéditeur (vérif de distribution)
-    bcc_list = [sender] if bcc_me else []
-
-    # Envoi (465 SSL ou 587 STARTTLS)
-    if int(cfg["port"]) == 465:
-        import ssl
-        with smtplib.SMTP_SSL(cfg["host"], 465, context=ssl.create_default_context()) as s:
-            s.login(cfg["user"], cfg["password"])      # ✅ dict, pas fonction
-            refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
-    else:
-        with smtplib.SMTP(cfg["host"], int(cfg["port"])) as s:
-            s.ehlo(); s.starttls(); s.ehlo()
-            s.login(cfg["user"], cfg["password"])
-            refused = s.send_message(msg, from_addr=sender, to_addrs=to_list + bcc_list)
-
-    return refused  # {} si tout accepté par le serveur
 
 # ================================ Réglages ====================================
 
@@ -598,21 +475,17 @@ if pal_col is None:
 else:
     total_palettes = int(pd.to_numeric(df_calc[pal_col], errors="coerce").fillna(0).sum())
 
-    # 2) Récup PDF
+    # 2) Récup PDF (ou possibilité de régénérer si absent)
     pdf_bytes = st.session_state.get("fiche_ramasse_pdf")
-    if pdf_bytes is None:
-        st.info("Génère d’abord la version PDF (bouton de téléchargement) pour pouvoir l’envoyer par e-mail.")
 
     # 3) UI destinataires (pré-rempli sans masquage ***)
     try:
-        _cfg_preview = _get_email_cfg()
-        sender_hint = _cfg_preview.get("sender", _cfg_preview.get("user"))
-        rec = _cfg_preview.get("recipients", [])
-        rec_str = rec if isinstance(rec, str) else ", ".join([x for x in rec if x])
-    except RuntimeError as e:
+        sender_hint = _get_ns("email", "sender") or _get("EMAIL_SENDER") or _get_ns("email", "user") or _get("EMAIL_USER")
+        rec_list = _default_recipients_from_cfg()
+        rec_str = ", ".join(rec_list)
+    except Exception:
         sender_hint = None
         rec_str = ""
-        st.caption(f"ℹ️ {e} — place ton fichier dans **.streamlit/secrets.toml** ou configure les secrets du déploiement.")
 
     _PREFILL = (rec_str or "") + "\u200b"   # anti-masquage Streamlit
     if "ramasse_email_to" not in st.session_state:
@@ -634,25 +507,49 @@ else:
 
     # Envoi
     if st.button("✉️ Envoyer la demande de ramasse", type="primary", use_container_width=True):
+        # Régénère le PDF si nécessaire et possible
         if pdf_bytes is None:
-            st.error("Le PDF n’est pas prêt. Clique d’abord sur « Télécharger la version PDF ».")
-        elif not to_list:
+            if tot_cartons <= 0:
+                st.error("Le PDF n’est pas prêt et aucun carton n’est saisi. Renseigne au moins une quantité > 0 puis clique à nouveau.")
+                st.stop()
+            try:
+                df_for_export = df_calc[display_cols].copy()
+                if not pd.api.types.is_string_dtype(df_for_export["DDM"]):
+                    df_for_export["DDM"] = df_for_export["DDM"].apply(
+                        lambda d: d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d)
+                    )
+                pdf_bytes = build_bl_enlevements_pdf(
+                    date_creation=_today_paris(),
+                    date_ramasse=date_ramasse,
+                    destinataire_title=DEST_TITLE,
+                    destinataire_lines=DEST_LINES,
+                    df_lines=df_for_export,
+                )
+                st.session_state["fiche_ramasse_pdf"] = pdf_bytes
+            except Exception as e:
+                st.error(f"Erreur PDF : {e}")
+                st.stop()
+
+        if not to_list:
             st.error("Indique au moins un destinataire.")
         else:
             try:
                 filename = f"Fiche_de_ramasse_{date_ramasse.strftime('%Y%m%d')}.pdf"
-                size_mb = len(pdf_bytes) / (1024*1024)
-                st.caption(f"Taille PDF : {size_mb:.2f} Mo")
+                size_kb = len(pdf_bytes) / 1024
+                st.caption(f"Taille PDF : {size_kb:.0f} Ko")
 
-                refused = send_mail_with_pdf(pdf_bytes, filename, total_palettes, to_list, date_ramasse, bcc_me=True)
+                # 👉 Envoi via `common.email` (API en prod, SMTP en local)
+                send_mail_with_pdf(
+                    pdf_bytes=pdf_bytes,
+                    filename=filename,
+                    total_palettes=total_palettes,
+                    to_list=to_list,
+                    date_ramasse=date_ramasse,
+                    bcc_me=True
+                )
 
                 st.write("Destinataires envoyés :", ", ".join(to_list))
-                if refused:
-                    bad = ", ".join(f"{k} ({v[0]})" for k, v in refused.items())
-                    st.warning(f"E-mail refusé pour : {bad} — adresse ou politique du domaine.")
-                else:
-                    st.success("Serveur SMTP : OK ✅ — message remis au transport. "
-                               "Si le destinataire ne le voit pas, il est probablement en quarantaine/filtre.")
+                st.success("📨 Demande de ramasse envoyée (backend e-mail OK).")
             except Exception as e:
                 st.error(f"Échec de l’envoi : {e}")
 
