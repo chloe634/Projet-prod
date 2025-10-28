@@ -1,7 +1,7 @@
 from __future__ import annotations
 from common.session import require_login, user_menu, user_menu_footer
 user = require_login()  # stoppe la page si non connecté
-user_menu()             # affiche l’info utilisateur + bouton logout dans la sidebar
+user_menu()             # nav custom (le bouton logout est dans le footer)
 
 import os, re, datetime as dt, unicodedata, mimetypes
 import pandas as pd
@@ -14,7 +14,7 @@ import common.xlsx_fill as _xlsx_fill
 importlib.reload(_xlsx_fill)
 from common.xlsx_fill import fill_bl_enlevements_xlsx, build_bl_enlevements_pdf
 
-import unicodedata, re  # au besoin, déjà importés plus haut
+# ================================ Normalisation ===============================
 
 def _norm(s: str) -> str:
     # normalise unicode + nettoie espaces/insécables + remplace le signe '×' par 'x'
@@ -48,7 +48,8 @@ def _build_opts_from_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
 
 
-# === EMAIL ===
+# ================================== EMAIL ====================================
+
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -221,6 +222,7 @@ Producteur de boissons fermentées
     return refused  # {} si tout accepté par le serveur
 
 # ================================ Réglages ====================================
+
 INFO_CSV_PATH = "info_FDR.csv"
 TEMPLATE_XLSX_PATH = "assets/BL_enlevements_Sofripa.xlsx"
 
@@ -231,6 +233,7 @@ DEST_LINES = [
 ]
 
 # ================================ Utils =======================================
+
 def _today_paris() -> dt.date:
     return dt.datetime.now(gettz("Europe/Paris")).date()
 
@@ -289,14 +292,17 @@ def _load_catalog(path: str) -> pd.DataFrame:
 
     df["_canon_prod"] = df.get("Produit","").map(_canon)
     df["_canon_des"]  = df.get("Désignation","").map(lambda s: _canon(re.sub(r"\(.*?\)", "", s)))
+    # Concat canonisée Produit + Désignation pour un matching par "hint" (marque, ex. NIKO)
+    df["_canon_full"] = (df.get("Produit","").fillna("") + " " + df.get("Désignation","").fillna("")).map(_canon)
 
     return df
 
-def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple[str, float] | None:
+def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str, prod_hint: str | None = None) -> tuple[str, float] | None:
     """
     Retourne (référence_6_chiffres, poids_carton) en matchant :
       - format (12x33 / 6x75 / 4x75)
       - + goût canonisé
+      - + (optionnel) 'prod_hint' pour privilégier une marque/ligne précise (ex. NIKO)
     """
     if catalog is None or catalog.empty or not fmt_label:
         return None
@@ -304,21 +310,29 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
     fmt_norm = fmt_label.lower().replace("cl","").replace(" ", "")
     g_can = _canon(gout_canon)
 
+    # candidats au bon format
     cand = catalog[catalog["_format_norm"].str.contains(fmt_norm, na=False)]
     if cand.empty:
         return None
 
-    m1 = cand[cand["_canon_prod"] == g_can]
-    if m1.empty:
-        toks = [t for t in g_can.split() if t]
-        def _contains_all(s):
-            s2 = str(s or "")
-            return all(t in s2 for t in toks)
-        m1 = cand[cand["_canon_des"].map(_contains_all)]
-    if m1.empty:
-        m1 = cand
+    # Tokens issus du "hint" (Produit/label) — ex. ['niko','kefir','mangue','passion']
+    hint_tokens = []
+    if prod_hint:
+        hint_tokens = [t for t in _canon(prod_hint).split() if t]
 
-    row = m1.iloc[0]
+    # Score : goût exact + hint strict > goût exact > hint partiel > reste
+    def score_row(row) -> tuple[int, int]:
+        s1 = 1 if row.get("_canon_prod") == g_can else 0
+        full = str(row.get("_canon_full") or "")
+        s2 = 1 if (hint_tokens and all(tok in full for tok in hint_tokens)) else 0
+        s3 = 1 if (hint_tokens and any(tok in full for tok in hint_tokens)) else 0
+        return (s1 + s2, s3)
+
+    cand_scored = cand.copy()
+    cand_scored["_sc"] = cand_scored.apply(score_row, axis=1)
+    cand_scored = cand_scored.sort_values(by="_sc", ascending=False)
+
+    row = cand_scored.iloc[0]
     code = re.sub(r"\D+", "", str(row.get("Code-barre","")))
     ref6 = code[-6:] if len(code) >= 6 else code
     poids = float(row.get("Poids") or 0.0)
@@ -385,13 +399,14 @@ def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
             "label": label,
             "gout": gout,
             "format": fmt,
-            "prod_hint": "",
+            "prod_hint": (prod_txt or label),   # <-- sert de "hint" pour choisir la bonne réf (NIKO, etc.)
         })
 
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
 
 
 # ================================== UI =======================================
+
 apply_theme("Fiche de ramasse — Ferment Station", "🚚")
 section("Fiche de ramasse", "🚚")
 
@@ -435,7 +450,7 @@ if source_mode == "Proposition sauvegardée":
     # Ici, on est sûr d'avoir une prod en session
     df_min_saved: pd.DataFrame = sp["df_min"].copy()
     ddm_saved = dt.date.fromisoformat(sp["ddm"]) if "ddm" in sp else _today_paris()
-    # ➜ construit les options depuis la proposition (helper ajouté plus haut)
+    # ➜ construit les options depuis la proposition (helper)
     opts_df = _build_opts_from_saved(df_min_saved)
 
 else:  # "Sélection manuelle"
@@ -479,8 +494,9 @@ for lab in selection_labels:
     row_opt = opts_df.loc[opts_df["label"] == lab].iloc[0]
     gout = row_opt["gout"]
     fmt  = row_opt["format"]
+    prod_hint = row_opt.get("prod_hint") or row_opt.get("label")
     ref = ""; poids_carton = 0.0
-    lk = _csv_lookup(catalog, gout, fmt)
+    lk = _csv_lookup(catalog, gout, fmt, prod_hint)  # <-- lookup sensible à la marque (NIKO)
     if lk: ref, poids_carton = lk
     meta_by_label[lab] = {"_format": fmt, "_poids_carton": poids_carton, "_reference": ref}
     rows.append({
@@ -636,8 +652,6 @@ else:
                                "Si le destinataire ne le voit pas, il est probablement en quarantaine/filtre.")
             except Exception as e:
                 st.error(f"Échec de l’envoi : {e}")
-
-
 
 # --- Footer sidebar (doit être le DERNIER appel de la page) ---
 user_menu_footer(user)
