@@ -12,7 +12,7 @@ pdfplumber
 pypdf
 tomli
 PyGithub>=1.59
-requests
+requests>=2.31.0
 SQLAlchemy==2.0.32
 psycopg2-binary==2.9.9
 
