@@ -326,66 +326,53 @@ def _csv_lookup(catalog: pd.DataFrame, gout_canon: str, fmt_label: str) -> tuple
 
 def _build_opts_from_saved(df_min_saved: pd.DataFrame) -> pd.DataFrame:
     """
-    Construit les options depuis la proposition de production sauvegardée.
-    - label : désignation la plus complète si dispo (marque + produit + format lisible)
-    - gout  : GoutCanon (pour le lookup CSV)
-    - format: '12x33' / '6x75' / '4x75' (pour le lookup CSV)
+    Construit la liste des produits à partir de la proposition sauvegardée.
+    - label  : 'Produit — Stock' (donc désignation + format, exactement comme en tableau de production)
+    - gout   : GoutCanon (pour le lookup CSV)
+    - format : '12x33' / '6x75' / '4x75' (dérivé de Stock/Format/Designation pour le lookup CSV)
     """
     if df_min_saved is None or df_min_saved.empty:
         return pd.DataFrame(columns=["label","gout","format","prod_hint"])
 
-    CAND_LABEL_COLS = [
-        "Produit", "Designation", "Désignation", "Libelle", "Libellé",
-        "NomProduit", "ProduitAffichage", "LibelleComplet", "Libellé complet"
-    ]
-    CAND_BRAND_COLS = ["Marque", "Brand"]
-
-    def _first_non_empty(row, cols):
-        for c in cols:
-            if c in row and pd.notna(row[c]) and str(row[c]).strip():
-                return str(row[c]).strip()
-        return ""
-
-    def _fmt_human(fmt_code: str) -> str:
-        return {
-            "12x33": "Carton de 12 Bouteilles - 0.33L",
-            "6x75":  "Carton de 6 Bouteilles - 0.75L",
-            "4x75":  "Carton de 4 Bouteilles - 0.75L",
-        }.get(fmt_code, fmt_code or "")
-
     rows, seen = [], set()
     for _, r in df_min_saved.iterrows():
         gout = str(r.get("GoutCanon") or "").strip()
-        fmt = _format_from_stock(str(r.get("Stock") or "")) \
-              or _format_from_stock(str(r.get("Format") or "")) \
-              or _format_from_stock(str(r.get("Designation") or "")) \
-              or _format_from_stock(str(r.get("Produit") or ""))
+
+        # Récupère les deux morceaux qui forment ton libellé complet
+        prod_txt  = _norm(r.get("Produit", ""))          # ex. "NIKO - Kéfir de fruits Mangue Passion"
+        stock_txt = _norm(r.get("Stock", ""))            # ex. "Carton de 12 Bouteilles - 0.33L"
+
+        # Format normalisé pour le lookup CSV
+        fmt = (
+            _format_from_stock(stock_txt)
+            or _format_from_stock(_norm(r.get("Format", "")))
+            or _format_from_stock(_norm(r.get("Designation", "")))
+            or _format_from_stock(prod_txt)
+        )
 
         if not gout or not fmt:
+            # si on n'a pas les deux, on ne peut pas faire un lookup fiable
             continue
 
-        raw_label = _first_non_empty(r, CAND_LABEL_COLS)
-        brand     = _first_non_empty(r, CAND_BRAND_COLS)
+        # Label final = ce que tu veux voir dans la multisélection et la table
+        # (on utilise un tiret long ' — ' pour la lisibilité)
+        label = f"{prod_txt} — {stock_txt}" if prod_txt and stock_txt else f"{gout} — {fmt}"
 
-        if raw_label:
-            nice = _norm(raw_label)
-        else:
-            parts = [ _norm(x) for x in (brand, gout, _fmt_human(fmt)) if x ]
-            nice = " - ".join(parts) if parts else f"{gout} — {fmt}"
-
+        # Évite les doublons par (gout, format)
         key = (gout.lower(), fmt)
         if key in seen:
             continue
         seen.add(key)
 
         rows.append({
-            "label": nice,
+            "label": label,
             "gout": gout,
             "format": fmt,
             "prod_hint": "",
         })
 
     return pd.DataFrame(rows).sort_values(by="label").reset_index(drop=True)
+
 
 
 # ================================== UI =======================================
