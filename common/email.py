@@ -32,28 +32,61 @@ def _get_ns(ns: str, key: str, default: Optional[str] = None) -> Optional[str]:
 
 # --------- Signature HTML (logos inline base64) ---------
 def html_signature(body_html: str) -> str:
-    import pathlib
+    """
+    Corps HTML + signature compacte alignée à gauche
+    (style identique à la version Ferment Station sur Outlook).
+    """
+    import base64, pathlib
     def b64img(relpath: str) -> str:
         p = pathlib.Path("assets/signature") / relpath
         data = p.read_bytes()
         return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+
     logo_symbiose = b64img("logo_symbiose.png")
-    logo_niko = b64img("NIKO_Logo.png")
+    logo_niko     = b64img("NIKO_Logo.png")
+
     return f"""
-    <div style="font-family:Inter,Arial,sans-serif;font-size:14px;line-height:1.5;">
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:0;background:#ffffff;">
+    <div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+                font-size:15px; line-height:1.6; color:#111827;">
+
       {body_html}
-      <hr style="margin:16px 0;border:none;border-top:1px solid #e5e7eb" />
-      <table role="presentation" style="border-collapse:collapse">
-        <tr>
-          <td style="padding-right:8px">
-            <img src="{logo_symbiose}" alt="Symbiose" style="height:28px"/>
-          </td>
-          <td>
-            <img src="{logo_niko}" alt="NIKO" style="height:28px"/>
-          </td>
-        </tr>
-      </table>
+
+      <div style="margin-top:24px; border-top:1px solid #e5e7eb; padding-top:12px;">
+        <div style="font-size:17px; font-weight:700; color:#111827; margin:0;">
+          Ferment Station
+        </div>
+        <div style="font-size:15px; font-weight:600; color:#111827; margin:0 0 10px 0;">
+          Producteur de boissons fermentées
+        </div>
+
+        <div style="font-size:14px; color:#111827; margin:0;">
+          26 Rue Robert Witchitz – 94200 Ivry-sur-Seine
+        </div>
+        <div style="font-size:14px; margin:0 0 12px 0;">
+          <a href="tel:+33971227895"
+             style="color:#2563eb; text-decoration:none;">09&nbsp;71&nbsp;22&nbsp;78&nbsp;95</a>
+        </div>
+
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+               style="border-collapse:collapse;">
+          <tr>
+            <td style="padding-right:12px;">
+              <img src="{logo_symbiose}" alt="Symbiose"
+                   style="height:32px;display:block;border:0;">
+            </td>
+            <td>
+              <img src="{logo_niko}" alt="NIKO"
+                   style="height:32px;display:block;border:0;">
+            </td>
+          </tr>
+        </table>
+      </div>
     </div>
+  </body>
+</html>
     """
 
 # --------- Backends ---------
