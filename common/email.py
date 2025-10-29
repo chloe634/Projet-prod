@@ -121,6 +121,38 @@ class MailgunBackend(EmailBackend):
         if resp.status_code >= 400:
             logger.error("Mailgun error %s: %s", resp.status_code, resp.text)
             raise RuntimeError(f"Mailgun API error {resp.status_code}: {resp.text}")
+                        # --- Brevo (Sendinblue) API backend ---
+class BrevoBackend(EmailBackend):
+    def __init__(self):
+        self.api_key = _get("BREVO_API_KEY")
+        self.sender = _get_ns("email", "sender") or _get("EMAIL_SENDER")
+        if not (self.api_key and self.sender):
+            raise RuntimeError("BREVO_API_KEY et EMAIL_SENDER requis pour Brevo.")
+
+    def send(self, subject: str, html_body: str, recipients: List[str],
+             attachments: Optional[List[Tuple[str, bytes]]] = None) -> None:
+        import requests, json, base64
+        url = "https://api.brevo.com/v3/smtp/email"
+        payload = {
+            "sender": {"email": self.sender},
+            "to": [{"email": r} for r in recipients],
+            "subject": subject,
+            "htmlContent": html_body,
+        }
+        if attachments:
+            payload["attachment"] = [{
+                "name": filename,
+                "content": base64.b64encode(content).decode("ascii")
+            } for (filename, content) in attachments]
+
+        resp = requests.post(
+            url,
+            headers={"api-key": self.api_key, "Content-Type": "application/json"},
+            data=json.dumps(payload),
+            timeout=20
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Brevo API error {resp.status_code}: {resp.text}")
 
 class SMTPBackend(EmailBackend):
     def __init__(self):
@@ -163,11 +195,13 @@ class SMTPBackend(EmailBackend):
 # --------- Sélection auto ---------
 def get_backend() -> EmailBackend:
     provider = (_get("EMAIL_PROVIDER") or "").lower()
+    if provider == "brevo" or _get("BREVO_API_KEY"):
+        return BrevoBackend()
     if provider == "sendgrid" or _get("SENDGRID_API_KEY"):
         return SendGridBackend()
     if provider == "mailgun" or (_get("MAILGUN_DOMAIN") and _get("MAILGUN_API_KEY")):
         return MailgunBackend()
-    return SMTPBackend()
+    return SMTPBackend()  # fallback pour le dev local
 
 # --------- API publique ---------
 def send_html_with_pdf(subject: str, html_body: str, recipients: List[str],
