@@ -17,6 +17,9 @@ from common.email import send_html_with_pdf, html_signature, _get_ns, _get
 from common.storage import list_saved, load_snapshot
 from pathlib import Path
 
+import os
+st.caption(f"Backend email: brevo  |  From: {os.environ.get('EMAIL_SENDER')}  |  ReplyTo: {os.environ.get('EMAIL_REPLY_TO')}")
+
 
 # ================================ Normalisation ===============================
 
