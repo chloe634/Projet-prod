@@ -19,6 +19,71 @@ from common.session import login_user, current_user
 from common.auth_reset import create_password_reset
 from common.email import send_reset_email
 
+
+# --- Reset inline quand on reçoit ?reset_token=... ---
+import hashlib
+import datetime as dt
+from sqlalchemy import text
+from db.conn import run_sql
+from common.auth_reset import consume_token_and_set_password
+
+def _hash_token_for_lookup(t: str) -> str:
+    return hashlib.sha256(t.encode()).hexdigest()
+
+# Si l'URL contient reset_token, on affiche directement le formulaire de reset ici
+_qp = st.query_params
+_reset_token = None
+if "reset_token" in _qp:
+    val = _qp.get("reset_token")
+    _reset_token = (val[0] if isinstance(val, list) else val) or ""
+    _reset_token = _reset_token.strip()
+
+if _reset_token:
+    st.set_page_config(page_title="Réinitialisation du mot de passe", page_icon="🔐", layout="centered")
+    st.title("Réinitialisation du mot de passe")
+
+    th = _hash_token_for_lookup(_reset_token)
+    rows = run_sql(text("""
+        SELECT id AS reset_id, user_id, expires_at, used_at
+        FROM password_resets
+        WHERE token_hash = :th
+        ORDER BY id DESC
+        LIMIT 1
+    """), {"th": th})
+
+    if not rows:
+        st.error("Lien invalide. Refaite une demande depuis « Mot de passe oublié ».")
+        st.stop()
+
+    row = rows[0]
+    if row["used_at"] is not None:
+        st.error("Ce lien a déjà été utilisé. Refaite une demande depuis « Mot de passe oublié ».")
+        st.stop()
+    if dt.datetime.now(dt.timezone.utc) >= row["expires_at"]:
+        st.error("Lien expiré. Refaite une demande depuis « Mot de passe oublié ».")
+        st.stop()
+
+    with st.form("reset_form"):
+        pwd1 = st.text_input("Nouveau mot de passe", type="password")
+        pwd2 = st.text_input("Confirmer le mot de passe", type="password")
+        ok = st.form_submit_button("Mettre à jour mon mot de passe", type="primary")
+
+    if ok:
+        if len(pwd1) < 8:
+            st.warning("Le mot de passe doit faire au moins 8 caractères.")
+            st.stop()
+        if pwd1 != pwd2:
+            st.warning("Les deux mots de passe ne correspondent pas.")
+            st.stop()
+        try:
+            consume_token_and_set_password(row["reset_id"], row["user_id"], pwd1)
+            st.success("Mot de passe mis à jour ✅")
+            st.page_link("pages/_00_Auth.py", label="➡️ Retour à la connexion")
+        except Exception as e:
+            st.error(f"Erreur inattendue : {e}")
+    st.stop()
+
+
 # --- Titre ---
 st.title("🔐 Authentification")
 
