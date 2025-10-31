@@ -243,3 +243,39 @@ def send_html_with_pdf(subject: str, html_body: str, recipients: List[str],
     backend = get_backend()
     logger.info("Envoi email via backend: %s", backend.__class__.__name__)
     backend.send(subject, html_body, recipients, attachments)
+
+# common/email.py (extrait minimal si tu n'as pas EmailService v2)
+import os, base64, http.client, json
+
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "station.ferment@gmail.com")
+SENDER_NAME = os.getenv("SENDER_NAME", "Symbiose")
+
+def send_reset_email(to_email: str, reset_url: str):
+    if not BREVO_API_KEY:
+        raise RuntimeError("BREVO_API_KEY manquant")
+
+    html = f"""
+    <p>Bonjour,</p>
+    <p>Vous avez demandé à réinitialiser votre mot de passe. Cliquez sur le lien ci-dessous&nbsp;:</p>
+    <p><a href="{reset_url}">Réinitialiser mon mot de passe</a></p>
+    <p>Ce lien expire dans 60 minutes. Si vous n’êtes pas à l’origine de cette demande, ignorez ce message.</p>
+    """
+
+    payload = {
+        "sender": {"name": SENDER_NAME, "email": SENDER_EMAIL},
+        "to": [{"email": to_email}],
+        "subject": "Réinitialisation de votre mot de passe",
+        "htmlContent": html
+    }
+
+    conn = http.client.HTTPSConnection("api.brevo.com")
+    headers = {
+        "api-key": BREVO_API_KEY,
+        "accept": "application/json",
+        "content-type": "application/json"
+    }
+    conn.request("POST", "/v3/smtp/email", body=json.dumps(payload), headers=headers)
+    resp = conn.getresponse()
+    if resp.status >= 300:
+        raise RuntimeError(f"Brevo error {resp.status} {resp.read()!r}")
