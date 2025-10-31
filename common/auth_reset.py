@@ -62,7 +62,7 @@ def create_password_reset(email: str, meta: Optional[Dict[str, str]] = None) -> 
     })
 
     # ancien: reset_url = f"{BASE_URL}/_01_Reset_password?token={token}" ou .../Auth?reset_token=...
-    reset_url = f"{BASE_URL}/?reset_token={token}"
+    reset_url = f"{BASE_URL}/06_Reset_password?token={token}"
     return reset_url
 
 def verify_token(token: str) -> Optional[Dict[str, Any]]:
