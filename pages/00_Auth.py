@@ -1,5 +1,6 @@
 from __future__ import annotations
 import streamlit as st
+import os
 
 # --- Config page + masquage sidebar ---
 st.set_page_config(page_title="Authentification", page_icon="🔐", initial_sidebar_state="collapsed")
