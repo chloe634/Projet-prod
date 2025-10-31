@@ -100,17 +100,27 @@ def engine() -> Engine:  # noqa: N802 - garder le nom historique
 # ------------------------
 # Exécution SQL
 # ------------------------
-def run_sql(sql: Any, params: Optional[Mapping[str, Any]] = None) -> Result:
+# db/conn.py — patch run_sql
+
+from typing import Any, Mapping, Optional, List, Dict, Union
+from sqlalchemy import text as _text
+
+def run_sql(sql: Any, params: Optional[Mapping[str, Any]] = None) -> Union[int, list[dict]]:
     """
-    Exécute une requête SQL (str ou sqlalchemy TextClause) et renvoie un Result.
+    Exécute une requête SQL (str ou sqlalchemy TextClause).
+    - Si la requête retourne des lignes (SELECT...), renvoie une liste de dicts.
+    - Sinon (INSERT/UPDATE/DELETE...), renvoie le rowcount (int).
     """
-    # Ne convertir en _text() que si c'est une chaîne.
     if isinstance(sql, str):
         sql = _text(sql)
 
-    # ✅ FIX : utiliser l'Engine réel
     with get_engine().begin() as conn:
-        return conn.execute(sql, params or {})
+        result = conn.execute(sql, params or {})
+        if result.returns_rows:
+            # Convertit chaque Row en dict via le mapping colonne->valeur
+            return [dict(row._mapping) for row in result.fetchall()]
+        else:
+            return result.rowcount
 
 
 def ping() -> Tuple[bool, str]:
