@@ -46,17 +46,18 @@ def forgot_password_ui():
         return
 
     if st.button("Envoyer le lien de réinitialisation", type="primary"):
-        # Meta (facultatif) : si tu ne les as pas en session, ce n'est pas bloquant
         meta = {"ip": st.session_state.get("client_ip"), "ua": st.session_state.get("client_ua")}
         try:
             reset_url = create_password_reset(email, meta=meta)
-            # On envoie même si reset_url est None (ne divulgue rien côté UI)
-            send_reset_email(email, reset_url or "https://example.invalid/reset")
-        except Exception:
-            # On masque les erreurs pour ne rien divulguer
-            pass
+            result = send_reset_email(email, reset_url or (os.getenv("BASE_URL", "") + "/_01_Reset_password?token=INVALID"))
+            # Optionnel: petit log de succès
+            st.toast("Email envoyé ✅")
+        except Exception as e:
+            st.error(f"Erreur d'envoi e-mail : {e}")
+            st.stop()
         st.session_state["reset_sent"] = True
         st.rerun()
+
 
 # ===============================
 # Onglets: Connexion / Inscription / Mot de passe oublié
