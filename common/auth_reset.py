@@ -1,48 +1,49 @@
 # common/auth_reset.py
 from __future__ import annotations
-import os, secrets, hashlib, datetime as dt
-from typing import Optional, Tuple, Dict, Any, List
+import os
+import secrets
+import hashlib
+import datetime as dt
+from typing import Optional, Dict, Any
 
 from sqlalchemy import text
 from db.conn import run_sql
 
-# Réutilise ton hasher de mots de passe existant
-from common.auth import get_user_by_email, hash_password  # adapte si besoin
+# ⚠️ On importe les fonctions qui existent chez toi
+from common.auth import find_user_by_email, hash_password  # <- OK
 
-BASE_URL = os.getenv("BASE_URL", "https://ton-domaine.app")  # Kinsta env var
+BASE_URL = os.getenv("BASE_URL", "https://ton-domaine.app")
 RESET_TTL_MINUTES = int(os.getenv("RESET_TTL_MINUTES", "60"))
 
 def _hash_token(token: str) -> str:
-    # On stocke uniquement le hash (pas le token en clair)
     return hashlib.sha256(token.encode()).hexdigest()
 
 def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
-def create_password_reset(email: str, meta: Optional[Dict[str, str]]=None) -> Optional[str]:
+def create_password_reset(email: str, meta: Optional[Dict[str, str]] = None) -> Optional[str]:
     """
     Crée un token de reset pour l'utilisateur (si l'email existe).
     Retourne l'URL de reset (avec token) OU None si pas d'utilisateur.
-    Ne divulgue pas l'existence ou non de l'email côté UI.
+    Côté UI, on ne divulgue jamais si l'email existe.
     """
-    user = get_user_by_email(email)
+    user = find_user_by_email(email)
     if not user:
         return None
 
-    # Petit rate-limit "maison": max 3 tokens actifs non utilisés, et 1 req/min
+    # Rate-limit léger: max 3 tokens actifs, et 1 requête / minute
     rows = run_sql(text("""
         SELECT created_at FROM password_resets
         WHERE user_id=:uid AND used_at IS NULL AND expires_at > now()
         ORDER BY created_at DESC
         LIMIT 3
     """), {"uid": str(user["id"])})
+
     if rows:
         last = rows[0]["created_at"]
         if _now_utc() - last < dt.timedelta(seconds=60):
-            # Trop fréquent: on ne crée pas de nouveau token, mais on renvoie None (UI dira "email envoyé")
             return None
         if len(rows) >= 3:
-            # Trop de tokens actifs, on ne crée pas un nouveau
             return None
 
     token = secrets.token_urlsafe(32)
@@ -60,15 +61,13 @@ def create_password_reset(email: str, meta: Optional[Dict[str, str]]=None) -> Op
         "ua": (meta or {}).get("ua"),
     })
 
-    # Lien vers une page dédiée Streamlit
     reset_url = f"{BASE_URL}/_01_Reset_password?token={token}"
     return reset_url
 
 def verify_token(token: str) -> Optional[Dict[str, Any]]:
-    """Retourne {user_id, reset_id} si token valide, sinon None."""
     token_hash = _hash_token(token)
     row = run_sql(text("""
-        SELECT pr.id as reset_id, pr.user_id
+        SELECT pr.id AS reset_id, pr.user_id
         FROM password_resets pr
         WHERE pr.token_hash=:th AND pr.used_at IS NULL AND pr.expires_at > now()
         ORDER BY pr.id DESC
